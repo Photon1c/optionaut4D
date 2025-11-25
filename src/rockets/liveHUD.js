@@ -80,6 +80,60 @@ export class LiveHUD {
         };
         this.container.appendChild(this.resetBtn);
 
+        // Export buttons container
+        const exportContainer = document.createElement('div');
+        exportContainer.style.cssText = 'margin-top: 10px; display: flex; gap: 6px;';
+
+        // JSON Export button
+        this.jsonBtn = document.createElement('button');
+        this.jsonBtn.textContent = '💾 JSON';
+        this.jsonBtn.title = 'Save mission to JSON';
+        this.jsonBtn.style.cssText = `
+            flex: 1;
+            padding: 6px;
+            background: rgba(0, 200, 255, 0.2);
+            color: #00c8ff;
+            border: 1px solid #00c8ff;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            transition: all 0.2s;
+        `;
+        this.jsonBtn.onmouseover = () => {
+            this.jsonBtn.style.background = 'rgba(0, 200, 255, 0.4)';
+        };
+        this.jsonBtn.onmouseout = () => {
+            this.jsonBtn.style.background = 'rgba(0, 200, 255, 0.2)';
+        };
+        exportContainer.appendChild(this.jsonBtn);
+
+        // GIF Export button
+        this.gifBtn = document.createElement('button');
+        this.gifBtn.textContent = '🎬 GIF';
+        this.gifBtn.title = 'Export animated GIF';
+        this.gifBtn.style.cssText = `
+            flex: 1;
+            padding: 6px;
+            background: rgba(255, 0, 255, 0.2);
+            color: #ff00ff;
+            border: 1px solid #ff00ff;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            transition: all 0.2s;
+        `;
+        this.gifBtn.onmouseover = () => {
+            this.gifBtn.style.background = 'rgba(255, 0, 255, 0.4)';
+        };
+        this.gifBtn.onmouseout = () => {
+            this.gifBtn.style.background = 'rgba(255, 0, 255, 0.2)';
+        };
+        exportContainer.appendChild(this.gifBtn);
+
+        this.container.appendChild(exportContainer);
+
         // Add to document
         document.body.appendChild(this.container);
     }
@@ -121,6 +175,22 @@ export class LiveHUD {
      */
     onReset(callback) {
         this.resetBtn.addEventListener('click', callback);
+    }
+
+    /**
+     * Set JSON export button click handler
+     * @param {Function} callback - Function to call on JSON export
+     */
+    onJSONExport(callback) {
+        this.jsonBtn.addEventListener('click', callback);
+    }
+
+    /**
+     * Set GIF export button click handler
+     * @param {Function} callback - Function to call on GIF export
+     */
+    onGIFExport(callback) {
+        this.gifBtn.addEventListener('click', callback);
     }
 
     /**

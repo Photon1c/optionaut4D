@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { rocketState } from './rocketState.js';
 import { Optionaut4DIntegration } from './optionaut4dIntegration.js';
+import { VolSlider } from './volSlider.js';
+import { ThemeSystem } from './themeSystem.js';
+import { ExportSystem } from './exportSystem.js';
+import { GIFExporter } from './gifExporter.js';
 
 console.log('Option Rockets entry script started');
 
@@ -19,6 +23,10 @@ let cameraFollowTarget = null;
 let cameraFollowEnabled = true;
 let exhaustParticles = [];
 let optionaut4D = null; // Optionaut 4D integration
+let volSlider = null; // Volatility slider
+let themeSystem = null; // Theme system
+let exportSystem = null; // Export system
+let gifExporter = null; // GIF exporter
 
 // Navigation controls
 let moveState = { forward: false, backward: false, left: false, right: false, up: false, down: false };
@@ -259,7 +267,106 @@ async function initScene() {
         optionaut4D = new Optionaut4DIntegration(scene, createRocket, calculateGreeks);
         optionaut4D.currentSpot = currentSpot;
         optionaut4D.planetRadius = 12;
+        optionaut4D.setRocketsArrayRef(rockets, exhaustParticles); // Pass array references for reset
         console.log('✅ Optionaut 4D integration ready');
+
+        // Initialize Vol Slider
+        console.log('Initializing vol slider...');
+        volSlider = new VolSlider(calculateGreeks);
+        volSlider.setRocketsRef(rockets);
+        volSlider.onUpdate((newIV, adjustment) => {
+            // Update Greek HUD when IV changes
+            if (optionaut4D && rockets.length > 0 && rockets[0].group) {
+                optionaut4D.updateGreekHUD(rockets[0].group);
+            }
+        });
+
+        // Setup vol slider UI
+        const ivSlider = document.getElementById('iv-slider');
+        const ivDisplay = document.getElementById('iv-display');
+        if (ivSlider && ivDisplay) {
+            ivSlider.addEventListener('input', (e) => {
+                const adjustment = parseFloat(e.target.value);
+                ivDisplay.textContent = `${adjustment > 0 ? '+' : ''}${adjustment}%`;
+                volSlider.handleIVChange(adjustment);
+            });
+        }
+        console.log('✅ Vol slider ready');
+
+        // Initialize Theme System
+        console.log('Initializing theme system...');
+        themeSystem = new ThemeSystem(scene, camera, renderer);
+        themeSystem.applyTheme(themeSystem.getCurrentTheme()); // Apply saved theme
+
+        // Setup theme toggle UI
+        const themeToggle = document.getElementById('theme-toggle');
+        const themeName = document.getElementById('theme-name');
+        if (themeToggle && themeName) {
+            themeName.textContent = themeSystem.getThemeName();
+            themeToggle.addEventListener('click', () => {
+                const newTheme = themeSystem.toggleTheme();
+                themeName.textContent = themeSystem.getThemeName();
+                console.log(`🎨 Switched to ${themeSystem.getThemeName()} theme`);
+            });
+        }
+        console.log('✅ Theme system ready');
+
+        // Initialize Export System
+        console.log('Initializing export system...');
+        exportSystem = new ExportSystem();
+        gifExporter = new GIFExporter(renderer, scene, camera);
+
+        // Setup JSON export
+        optionaut4D.liveHUD.onJSONExport(() => {
+            const missionData = exportSystem.exportMission({
+                rockets,
+                camera,
+                controls,
+                currentSpot,
+                currentIV: volSlider.getCurrentIV(),
+                currentTheme: themeSystem.getCurrentTheme()
+            });
+            exportSystem.downloadJSON(missionData);
+        });
+
+        // Setup GIF export
+        optionaut4D.liveHUD.onGIFExport(async () => {
+            const btn = optionaut4D.liveHUD.gifBtn;
+            const originalText = btn.textContent;
+
+            try {
+                btn.disabled = true;
+                btn.textContent = 'Capturing...';
+
+                const blobUrl = await gifExporter.exportToGIF({
+                    duration: 3000,
+                    fps: 30,
+                    width: 800,
+                    height: 600,
+                    quality: 10,
+                    onProgress: (progress) => {
+                        btn.textContent = `${Math.round(progress * 100)}%`;
+                    }
+                });
+
+                gifExporter.downloadGIF(blobUrl);
+                btn.textContent = '✓ Done!';
+
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }, 2000);
+
+            } catch (error) {
+                console.error('GIF export failed:', error);
+                btn.textContent = '✗ Failed';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }, 2000);
+            }
+        });
+        console.log('✅ Export system ready');
 
         // Hide loading elements
         const loadingDiv = document.getElementById('loading');

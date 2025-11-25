@@ -23,6 +23,10 @@ export class Optionaut4DIntegration {
         this.currentSpot = 100;
         this.planetRadius = 12;
 
+        // Store reference to rockets array for reset
+        this.rocketsArrayRef = null;
+        this.exhaustParticlesRef = null;
+
         this.init();
     }
 
@@ -197,23 +201,56 @@ export class Optionaut4DIntegration {
         });
     }
 
+    setRocketsArrayRef(rocketsArray, exhaustParticlesArray) {
+        this.rocketsArrayRef = rocketsArray;
+        this.exhaustParticlesRef = exhaustParticlesArray;
+    }
+
     resetScene() {
         console.log('🔄 Resetting scene...');
+
+        // Remove all rockets from scene
+        if (this.rocketsArrayRef) {
+            this.rocketsArrayRef.forEach(rocket => {
+                if (rocket.group) {
+                    this.scene.remove(rocket.group);
+                }
+            });
+            this.rocketsArrayRef.length = 0; // Clear array
+        }
+
+        // Remove all exhaust particles
+        if (this.exhaustParticlesRef) {
+            this.exhaustParticlesRef.forEach(particles => {
+                if (particles) {
+                    this.scene.remove(particles);
+                    if (particles.geometry) particles.geometry.dispose();
+                    if (particles.material) particles.material.dispose();
+                }
+            });
+            this.exhaustParticlesRef.length = 0; // Clear array
+        }
 
         // Remove all breakeven rings
         this.breakevenRings.forEach(ring => {
             this.scene.remove(ring);
+            if (ring.geometry) ring.geometry.dispose();
+            if (ring.material) ring.material.dispose();
         });
         this.breakevenRings = [];
 
         // Reset HUDs
         this.liveHUD.updatePL(0);
+        this.liveHUD.updateSpotPrice(this.currentSpot, 'SPY');
+        this.liveHUD.updateDTE(7);
+
         this.greekHUD.update({
             delta: 0, gamma: 0, vega: 0, theta: 0, rho: 0
         }, 1.0);
 
-        // Note: Rocket removal should be handled by the main scene
-        console.log('✅ Scene reset');
+        this.selectedRocket = null;
+
+        console.log('✅ Scene reset complete');
     }
 
     destroy() {

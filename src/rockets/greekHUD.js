@@ -30,8 +30,8 @@ export class GreekHUD {
         this.container.id = 'greek-hud';
         this.container.style.cssText = `
             position: fixed;
-            bottom: 80px;
-            right: 10px;
+            bottom: 10px;
+            left: 10px;
             z-index: 1000;
             background: rgba(0, 0, 0, 0.8);
             padding: 16px;
