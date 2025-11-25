@@ -1,11 +1,11 @@
 [build]
-  publish = "/dist"
+  publish = "dist"
   command = "npm run build"
 
 [[redirects]]
   from = "/"
-  to = "/pipeline.html"
-  status = 200 
+  to = "/backend/rockets.html"
+  status = 200
 
 # Headers for better performance
 [[headers]]
