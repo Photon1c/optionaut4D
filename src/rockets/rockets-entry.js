@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { rocketState } from './rocketState.js';
+import { Optionaut4DIntegration } from './optionaut4dIntegration.js';
 
 console.log('Option Rockets entry script started');
 
@@ -17,6 +18,7 @@ let currentRocket = null;
 let cameraFollowTarget = null;
 let cameraFollowEnabled = true;
 let exhaustParticles = [];
+let optionaut4D = null; // Optionaut 4D integration
 
 // Navigation controls
 let moveState = { forward: false, backward: false, left: false, right: false, up: false, down: false };
@@ -48,20 +50,20 @@ function calculateGreeks(spot, strike, timeToExpiry, iv, r = 0.02, optionType = 
 
     const d1 = (Math.log(spot / strike) + (r + 0.5 * iv * iv) * timeToExpiry) / (iv * Math.sqrt(timeToExpiry));
     const d2 = d1 - iv * Math.sqrt(timeToExpiry);
-    
+
     // Normal CDF approximation
     const normCDF = (x) => 0.5 * (1 + Math.sign(x) * (1 - Math.exp(-2 * x * x / Math.PI)));
     const normPDF = (x) => Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
-    
+
     const delta = optionType === 'call' ? normCDF(d1) : -normCDF(-d1);
     const gamma = normPDF(d1) / (spot * iv * Math.sqrt(timeToExpiry));
     const vega = spot * normPDF(d1) * Math.sqrt(timeToExpiry) * 0.01; // Per 1% IV change
     const theta = -(spot * normPDF(d1) * iv) / (2 * Math.sqrt(timeToExpiry)) - r * strike * Math.exp(-r * timeToExpiry) * normCDF(optionType === 'call' ? d2 : -d2);
-    
+
     const price = optionType === 'call'
         ? spot * normCDF(d1) - strike * Math.exp(-r * timeToExpiry) * normCDF(d2)
         : strike * Math.exp(-r * timeToExpiry) * normCDF(-d2) - spot * normCDF(-d1);
-    
+
     return { delta, gamma, vega, theta, price };
 }
 
@@ -183,7 +185,7 @@ async function initScene() {
         controls.enabled = true; // Enable manual controls
         console.log('Controls set up');
         updateLoadingBar(80);
-        
+
         // Setup keyboard and mouse navigation
         setupNavigationControls();
 
@@ -202,13 +204,13 @@ async function initScene() {
                 iv: 0.16,
                 entry: 0.5
             });
-            
+
             // Smoothly transition camera to follow rocket after creation
             setTimeout(() => {
                 if (cameraFollowTarget && rocket) {
                     const targetPos = cameraFollowTarget.position.clone();
                     console.log(`📷 Positioning camera to follow rocket at: (${targetPos.x.toFixed(2)}, ${targetPos.y.toFixed(2)}, ${targetPos.z.toFixed(2)})`);
-                    
+
                     // Position camera behind and above rocket, ensuring we can see both planet and rocket
                     const toRocket = targetPos.clone();
                     if (toRocket.length() > 0.1) {
@@ -216,31 +218,31 @@ async function initScene() {
                     } else {
                         toRocket.set(1, 0, 0);
                     }
-                    
+
                     // Position camera zoomed in on rocket (Florida launch pad perspective)
                     // Position BEHIND rocket (away from origin) so planet doesn't block
                     const followDistance = 8; // Close for realistic perspective
                     const followHeight = 4; // Slightly above rocket
-                    
+
                     // Position BEHIND rocket (away from origin)
                     const rocketDistance = targetPos.length();
                     const idealPosition = targetPos.clone()
                         .add(toRocket.multiplyScalar(followDistance))
                         .add(new THREE.Vector3(0, followHeight, 0));
-                    
+
                     // Ensure camera is further from origin than rocket
                     if (idealPosition.length() <= rocketDistance + 2) {
                         const direction = idealPosition.clone().normalize();
                         idealPosition.copy(direction.multiplyScalar(rocketDistance + followDistance + 2));
                         idealPosition.y = Math.max(targetPos.y + followHeight, 5);
                     }
-                    
+
                     camera.position.copy(idealPosition);
-                    
+
                     // Look directly at rocket
                     controls.target.copy(targetPos);
                     camera.lookAt(controls.target);
-                    
+
                     const distToRocket = camera.position.distanceTo(targetPos);
                     console.log(`📷 ===== CAMERA POSITIONED (ZOOMED IN) =====`);
                     console.log(`📷 Camera: (${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)})`);
@@ -251,6 +253,13 @@ async function initScene() {
                 }
             }, 500);
         }, 200);
+
+        // Initialize Optionaut 4D Integration (contract parser, HUDs, profit zones)
+        console.log('Initializing Optionaut 4D integration...');
+        optionaut4D = new Optionaut4DIntegration(scene, createRocket, calculateGreeks);
+        optionaut4D.currentSpot = currentSpot;
+        optionaut4D.planetRadius = 12;
+        console.log('✅ Optionaut 4D integration ready');
 
         // Hide loading elements
         const loadingDiv = document.getElementById('loading');
@@ -272,10 +281,10 @@ async function initScene() {
 function createRocket(params) {
     const { type, strike, spot, timeToExpiry, iv, entry } = params;
     const greeks = calculateGreeks(spot, strike, timeToExpiry, iv, 0.02, type);
-    
+
     // Rocket group
     const rocketGroup = new THREE.Group();
-    
+
     // Enhanced rocket body (cylinder with fins) - larger for visibility
     const rocketScale = 1.5; // Scale up rocket for better visibility
     console.log(`🚀 Creating rocket with scale: ${rocketScale}x`);
@@ -292,14 +301,14 @@ function createRocket(params) {
     body.rotation.z = Math.PI / 2;
     body.castShadow = true;
     rocketGroup.add(body);
-    
+
     // Rocket nose (cone with tip)
     const noseGeometry = new THREE.ConeGeometry(0.6 * rocketScale, 1.5 * rocketScale, 16);
     const nose = new THREE.Mesh(noseGeometry, bodyMaterial);
     nose.position.x = 3.25 * rocketScale;
     nose.castShadow = true;
     rocketGroup.add(nose);
-    
+
     // Add fins (3 fins for stability)
     for (let i = 0; i < 3; i++) {
         const finGeometry = new THREE.BoxGeometry(0.1, 0.8, 0.3);
@@ -312,7 +321,7 @@ function createRocket(params) {
         fin.rotation.y = Math.sin(angle) * 0.3;
         rocketGroup.add(fin);
     }
-    
+
     // Position rocket based on strike (periapsis = closest approach to planet)
     // Strike maps to distance from planet - better scaling
     const strikeDistance = Math.abs(strike - spot) * 3; // Increased scale for better visibility
@@ -323,14 +332,14 @@ function createRocket(params) {
     const x = Math.cos(angle) * actualDistance;
     const z = Math.sin(angle) * actualDistance;
     const y = Math.max(25, greeks.price * 15); // Height = option price, better scaling, minimum 25 units
-    
+
     rocketGroup.position.set(x, y, z);
     console.log(`🚀 ===== ROCKET CREATED =====`);
     console.log(`🚀 Position: (${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)})`);
     console.log(`🚀 Strike: ${strike}, Spot: ${spot}, Distance from planet: ${actualDistance.toFixed(2)}`);
     console.log(`🚀 Greeks - Delta: ${greeks.delta.toFixed(3)}, Theta: ${greeks.theta.toFixed(3)}, Price: $${greeks.price.toFixed(2)}`);
     console.log(`🚀 Planet at origin (0, 0, 0), Rocket at X=${x.toFixed(2)}`);
-    
+
     // Orient rocket based on delta (thrust direction)
     // Simplified orientation - just point forward with slight angle
     const deltaAngle = (greeks.delta - 0.5) * Math.PI * 0.2; // Reduced angle range
@@ -340,7 +349,7 @@ function createRocket(params) {
     rocketGroup.rotation.z = deltaAngle;
     rocketGroup.rotation.x = 0; // No pitch
     rocketGroup.rotation.order = 'XYZ'; // Set rotation order for stability
-    
+
     // Create enhanced exhaust trail with particles (scaled to match rocket)
     const exhaustLength = Math.abs(greeks.delta) * 10 * rocketScale;
     const exhaustGeometry = new THREE.ConeGeometry(0.4 * rocketScale, exhaustLength, 8);
@@ -356,14 +365,14 @@ function createRocket(params) {
     exhaust.position.x = -1.75 * rocketScale - exhaustLength / 2;
     exhaust.rotation.z = Math.PI;
     rocketGroup.add(exhaust);
-    
+
     // Create particle system for exhaust
     const particleCount = 100;
     const particlesGeometry = new THREE.BufferGeometry();
     const positions = new Float32Array(particleCount * 3);
     const velocities = new Float32Array(particleCount * 3);
     const lifetimes = new Float32Array(particleCount);
-    
+
     const exhaustStartX = -1.75 * rocketScale;
     for (let i = 0; i < particleCount; i++) {
         const i3 = i * 3;
@@ -375,7 +384,7 @@ function createRocket(params) {
         velocities[i3 + 2] = (Math.random() - 0.5) * 0.8;
         lifetimes[i] = Math.random();
     }
-    
+
     particlesGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     const particlesMaterial = new THREE.PointsMaterial({
         color: exhaustColor,
@@ -399,22 +408,22 @@ function createRocket(params) {
     };
     rocketGroup.add(particles);
     exhaustParticles.push(particles);
-    
+
     // Create trajectory line
     const trajectory = createTrajectory(spot, strike, greeks, type);
     rocketGroup.add(trajectory);
-    
+
     // Add breakeven rings
     const breakeven = strike + (type === 'call' ? entry : -entry);
     const breakevenRing = createBreakevenRing(breakeven, spot, type === 'call' ? 0x00ff00 : 0xff0000);
     scene.add(breakevenRing);
     breakevenRings.push(breakevenRing);
-    
+
     // Add rocket label
     const label = createRocketLabel(type, strike, greeks.price.toFixed(2));
     label.position.set(x, y + 3, z);
     rocketGroup.add(label);
-    
+
     scene.add(rocketGroup);
     rockets.push({
         group: rocketGroup,
@@ -423,10 +432,10 @@ function createRocket(params) {
         trajectory: trajectory,
         breakevenRing: breakevenRing
     });
-    
+
     currentRocket = rocketGroup;
     cameraFollowTarget = rocketGroup; // Set as camera follow target
-    
+
     // Store in rocket state for AI/human interaction
     const rocketId = `rocket_${Date.now()}`;
     rocketState.addRocket({
@@ -439,41 +448,41 @@ function createRocket(params) {
         entry,
         position: { x, y, z }
     });
-    
+
     rocketGroup.userData.rocketId = rocketId;
-    
+
     // Add physics properties to rocket with orbital mechanics
     rocketGroup.userData.velocity = new THREE.Vector3(0, 0, 0);
     rocketGroup.userData.acceleration = new THREE.Vector3(0, 0, 0);
-    
+
     // Thrust system based on Greeks
     rocketGroup.userData.maxThrust = Math.abs(greeks.delta) * 15; // Max thrust based on delta
     rocketGroup.userData.fuel = 1.0; // Start with full fuel (1.0 = 100%)
     rocketGroup.userData.fuelBurnRate = Math.abs(greeks.theta) * 0.01; // Theta = fuel burn rate
     rocketGroup.userData.maxSpeed = 30; // Maximum speed
-    
+
     // Calculate orbital velocity for stable orbit
     // v = sqrt(GM/r) where G*M is gravitational constant * planet mass
     const distanceFromPlanet = rocketGroup.position.length();
     const gravitationalParameter = 500; // Tuned for visual effect
     const orbitalSpeed = Math.sqrt(gravitationalParameter / distanceFromPlanet);
-    
+
     // Give rocket initial orbital velocity (perpendicular to radius)
     const radiusVector = rocketGroup.position.clone().normalize();
     const tangentVector = new THREE.Vector3(-radiusVector.z, 0, radiusVector.x).normalize();
     rocketGroup.userData.velocity.copy(tangentVector.multiplyScalar(orbitalSpeed * 0.7)); // 70% of orbital velocity
-    
+
     // Initialize lastDirection based on rocket's initial orientation (prevents spinning)
     const initialForward = new THREE.Vector3(1, 0, 0);
     initialForward.applyQuaternion(rocketGroup.quaternion);
     rocketGroup.userData.lastDirection = initialForward.clone();
-    
+
     console.log(`✅ Created ${type} rocket: Strike=${strike}, Price=$${greeks.price.toFixed(2)}, Delta=${greeks.delta.toFixed(3)}`);
     console.log(`✅ Rocket stored in state with ID: ${rocketId}`);
     console.log(`✅ Max thrust: ${rocketGroup.userData.maxThrust.toFixed(2)}, Fuel burn rate: ${rocketGroup.userData.fuelBurnRate.toFixed(4)}`);
     console.log(`✅ Orbital velocity: ${orbitalSpeed.toFixed(2)}, Initial velocity: (${rocketGroup.userData.velocity.x.toFixed(2)}, ${rocketGroup.userData.velocity.y.toFixed(2)}, ${rocketGroup.userData.velocity.z.toFixed(2)})`);
     console.log(`✅ Distance from planet: ${distanceFromPlanet.toFixed(2)}`);
-    
+
     return rocketGroup;
 }
 
@@ -481,7 +490,7 @@ function createRocket(params) {
 function createTrajectory(spot, strike, greeks, type) {
     const points = [];
     const segments = 50;
-    
+
     for (let i = 0; i <= segments; i++) {
         const t = i / segments;
         // Curved trajectory based on gamma (curvature)
@@ -490,7 +499,7 @@ function createTrajectory(spot, strike, greeks, type) {
         const z = Math.sin(t * Math.PI * 2) * Math.abs(strike - spot) * 2;
         points.push(new THREE.Vector3(x, y, z));
     }
-    
+
     const curve = new THREE.CatmullRomCurve3(points);
     const geometry = new THREE.TubeGeometry(curve, segments, 0.1, 8, false);
     const material = new THREE.MeshBasicMaterial({
@@ -498,7 +507,7 @@ function createTrajectory(spot, strike, greeks, type) {
         transparent: true,
         opacity: 0.3
     });
-    
+
     return new THREE.Mesh(geometry, material);
 }
 
@@ -524,16 +533,16 @@ function createLabel(text, x, y, z) {
     canvas.width = 256;
     canvas.height = 64;
     const context = canvas.getContext('2d');
-    
+
     context.fillStyle = 'rgba(255, 255, 255, 0.9)';
     context.font = 'bold 24px Arial';
     context.textAlign = 'center';
     context.textBaseline = 'middle';
     context.fillText(text, canvas.width / 2, canvas.height / 2);
-    
+
     const texture = new THREE.CanvasTexture(canvas);
     texture.needsUpdate = true;
-    
+
     const spriteMaterial = new THREE.SpriteMaterial({
         map: texture,
         transparent: true
@@ -541,7 +550,7 @@ function createLabel(text, x, y, z) {
     const sprite = new THREE.Sprite(spriteMaterial);
     sprite.scale.set(10, 2.5, 1);
     sprite.position.set(x, y, z);
-    
+
     return sprite;
 }
 
@@ -551,10 +560,10 @@ function createRocketLabel(type, strike, price) {
     canvas.width = 256;
     canvas.height = 64;
     const context = canvas.getContext('2d');
-    
+
     context.fillStyle = 'rgba(0, 0, 0, 0.7)';
     context.fillRect(0, 0, canvas.width, canvas.height);
-    
+
     context.fillStyle = '#ffffff';
     context.font = 'bold 20px Arial';
     context.textAlign = 'center';
@@ -562,17 +571,17 @@ function createRocketLabel(type, strike, price) {
     context.fillText(`${type.toUpperCase()} $${strike}`, canvas.width / 2, canvas.height / 2 - 8);
     context.font = '14px Arial';
     context.fillText(`$${price}`, canvas.width / 2, canvas.height / 2 + 8);
-    
+
     const texture = new THREE.CanvasTexture(canvas);
     texture.needsUpdate = true;
-    
+
     const spriteMaterial = new THREE.SpriteMaterial({
         map: texture,
         transparent: true
     });
     const sprite = new THREE.Sprite(spriteMaterial);
     sprite.scale.set(5, 1.25, 1);
-    
+
     return sprite;
 }
 
@@ -583,36 +592,36 @@ function createControlsPanel() {
 
     controlsPanel.innerHTML = '';
     controlsPanel.style.cssText = 'position: absolute; top: 10px; right: 10px; z-index: 1000; background: rgba(0, 0, 0, 0.85); padding: 12px; border-radius: 8px; min-width: 200px; max-width: 250px; font-family: Arial, sans-serif; font-size: 11px; color: white; box-shadow: 0 4px 12px rgba(0,0,0,0.5);';
-    
+
     const container = document.createElement('div');
-    
+
     // Compact title
     const title = document.createElement('div');
     title.textContent = '🚀 Option Rockets';
     title.style.cssText = 'margin: 0 0 12px 0; font-size: 14px; font-weight: bold; color: #4a90e2;';
     container.appendChild(title);
-    
+
     // Compact grid layout
     const grid = document.createElement('div');
     grid.style.cssText = 'display: grid; grid-template-columns: 60px 1fr; gap: 6px 8px; align-items: center;';
-    
+
     // Option type
     addGridRow(grid, 'Type:', 'select', 'option-type', '<option value="call">Call</option><option value="put">Put</option>');
-    
+
     // Strike
     addGridRow(grid, 'Strike:', 'number', 'strike-input', '100', '1');
-    
+
     // Spot
     addGridRow(grid, 'Spot:', 'number', 'spot-input', '100', '1');
-    
+
     // IV
     addGridRow(grid, 'IV:', 'number', 'iv-input', '0.16', '0.01');
-    
+
     // DTE
     addGridRow(grid, 'DTE:', 'number', 'dte-input', '1', '1');
-    
+
     container.appendChild(grid);
-    
+
     // Launch button
     const launchBtn = document.createElement('button');
     launchBtn.textContent = 'Launch Rocket';
@@ -626,13 +635,13 @@ function createControlsPanel() {
         const iv = parseFloat(document.getElementById('iv-input').value);
         const dte = parseFloat(document.getElementById('dte-input').value);
         const timeToExpiry = dte / 365;
-        
+
         // KEEP existing rockets - support multi-leg strategies!
         // Don't remove old rockets, just add new ones
         console.log(`🚀 Keeping ${rockets.length} existing rocket(s), launching new one`);
-        
+
         console.log(`🚀 Launching new rocket: ${type}, Strike=${strike}, Spot=${spot}, IV=${iv}, DTE=${dte}`);
-        
+
         const newRocket = createRocket({
             type,
             strike,
@@ -641,20 +650,20 @@ function createControlsPanel() {
             iv,
             entry: 0.5
         });
-        
+
         if (!newRocket) {
             console.error('❌ Failed to create rocket!');
             return;
         }
-        
+
         // Update camera target to new rocket
         cameraFollowTarget = newRocket;
         currentSpot = spot;
         cameraFollowEnabled = true;
-        
+
         console.log(`✅ New rocket launched! Camera will follow it.`);
         console.log(`✅ Rocket position: (${newRocket.position.x.toFixed(2)}, ${newRocket.position.y.toFixed(2)}, ${newRocket.position.z.toFixed(2)})`);
-        
+
         // Immediately reposition camera to new rocket
         const targetPos = newRocket.position.clone();
         const toRocket = targetPos.clone();
@@ -663,22 +672,22 @@ function createControlsPanel() {
         } else {
             toRocket.set(1, 0, 0);
         }
-        
+
         // Zoom out to get good view
         const followDistance = 25;
         const followHeight = 15;
         const idealPosition = targetPos.clone()
             .add(toRocket.multiplyScalar(followDistance))
             .add(new THREE.Vector3(0, followHeight, 0));
-        
+
         camera.position.copy(idealPosition);
         controls.target.copy(targetPos);
         camera.lookAt(controls.target);
-        
+
         console.log(`📷 Camera repositioned to follow new rocket at: (${targetPos.x.toFixed(2)}, ${targetPos.y.toFixed(2)}, ${targetPos.z.toFixed(2)})`);
     });
     container.appendChild(launchBtn);
-    
+
     // Camera follow toggle
     const followLabel = document.createElement('label');
     followLabel.style.cssText = 'display: flex; align-items: center; margin-top: 10px; font-size: 10px; cursor: pointer;';
@@ -697,13 +706,13 @@ function createControlsPanel() {
     followLabel.appendChild(followCheckbox);
     followLabel.appendChild(document.createTextNode('Follow Rocket'));
     container.appendChild(followLabel);
-    
+
     // Navigation help
     const helpDiv = document.createElement('div');
     helpDiv.style.cssText = 'margin-top: 10px; padding: 6px; background: rgba(0,0,0,0.3); border-radius: 3px; font-size: 9px; color: #aaa;';
     helpDiv.innerHTML = 'WASD: Move<br>Mouse: Look<br>Q/E: Up/Down';
     container.appendChild(helpDiv);
-    
+
     controlsPanel.appendChild(container);
 }
 
@@ -712,7 +721,7 @@ function addGridRow(grid, labelText, inputType, inputId, defaultValue, step = nu
     label.textContent = labelText;
     label.style.cssText = 'font-size: 11px; color: #ccc;';
     grid.appendChild(label);
-    
+
     let input;
     if (inputType === 'select') {
         input = document.createElement('select');
@@ -732,7 +741,7 @@ function addGridRow(grid, labelText, inputType, inputId, defaultValue, step = nu
 function setupNavigationControls() {
     // Keyboard controls
     window.addEventListener('keydown', (e) => {
-        switch(e.key.toLowerCase()) {
+        switch (e.key.toLowerCase()) {
             case 'w': case 'arrowup': moveState.forward = true; break;
             case 's': case 'arrowdown': moveState.backward = true; break;
             case 'a': case 'arrowleft': moveState.left = true; break;
@@ -741,9 +750,9 @@ function setupNavigationControls() {
             case 'e': case 'shift': moveState.down = true; break;
         }
     });
-    
+
     window.addEventListener('keyup', (e) => {
-        switch(e.key.toLowerCase()) {
+        switch (e.key.toLowerCase()) {
             case 'w': case 'arrowup': moveState.forward = false; break;
             case 's': case 'arrowdown': moveState.backward = false; break;
             case 'a': case 'arrowleft': moveState.left = false; break;
@@ -752,7 +761,7 @@ function setupNavigationControls() {
             case 'e': case 'shift': moveState.down = false; break;
         }
     });
-    
+
     // Mouse controls
     renderer.domElement.addEventListener('mousedown', (e) => {
         if (e.button === 0) { // Left mouse button
@@ -761,54 +770,54 @@ function setupNavigationControls() {
             mouseState.lastY = e.clientY;
         }
     });
-    
+
     renderer.domElement.addEventListener('mouseup', () => {
         mouseState.isDown = false;
     });
-    
+
     renderer.domElement.addEventListener('mousemove', (e) => {
         if (mouseState.isDown && !cameraFollowEnabled) {
             const dx = e.clientX - mouseState.lastX;
             const dy = e.clientY - mouseState.lastY;
-            
+
             // Rotate camera
             const spherical = new THREE.Spherical();
             spherical.setFromVector3(camera.position.clone().sub(controls.target));
             spherical.theta -= dx * lookSpeed;
             spherical.phi += dy * lookSpeed;
             spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi));
-            
+
             const newPosition = new THREE.Vector3().setFromSpherical(spherical).add(controls.target);
             camera.position.copy(newPosition);
             camera.lookAt(controls.target);
-            
+
             mouseState.lastX = e.clientX;
             mouseState.lastY = e.clientY;
         }
     });
-    
+
     // Prevent context menu
     renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
-    
+
     console.log('✅ Navigation controls set up: WASD/Arrows to move, Mouse drag to look, Q/E to go up/down');
 }
 
 // Update navigation
 function updateNavigation(delta) {
     if (cameraFollowEnabled) return; // Don't allow manual navigation when following
-    
+
     const speed = moveSpeed * delta;
     const direction = new THREE.Vector3();
     const right = new THREE.Vector3();
-    
+
     // Get camera direction
     camera.getWorldDirection(direction);
     direction.y = 0; // Keep horizontal
     direction.normalize();
-    
+
     // Get right vector
     right.crossVectors(direction, camera.up).normalize();
-    
+
     // Apply movement
     if (moveState.forward) camera.position.addScaledVector(direction, speed);
     if (moveState.backward) camera.position.addScaledVector(direction, -speed);
@@ -816,7 +825,7 @@ function updateNavigation(delta) {
     if (moveState.right) camera.position.addScaledVector(right, speed);
     if (moveState.up) camera.position.y += speed;
     if (moveState.down) camera.position.y -= speed;
-    
+
     // Update controls target to maintain look direction
     const lookDirection = new THREE.Vector3();
     camera.getWorldDirection(lookDirection);
@@ -828,14 +837,14 @@ function updateCameraFollow() {
     if (!cameraFollowEnabled) {
         return;
     }
-    
+
     // Get all active rockets
     const activeRockets = rockets.filter(r => r.group && r.group.visible);
-    
+
     if (activeRockets.length === 0) {
         return; // No rockets to follow
     }
-    
+
     // If we have a specific target, use it; otherwise use the most recent rocket
     let targetRocket = cameraFollowTarget;
     if (!targetRocket || !activeRockets.find(r => r.group === targetRocket)) {
@@ -843,9 +852,9 @@ function updateCameraFollow() {
         targetRocket = activeRockets[activeRockets.length - 1].group;
         cameraFollowTarget = targetRocket;
     }
-    
+
     const targetPos = targetRocket.position.clone();
-    
+
     // Calculate direction from origin (planet) to rocket
     const toRocket = targetPos.clone();
     if (toRocket.length() < 0.1) {
@@ -853,13 +862,13 @@ function updateCameraFollow() {
     } else {
         toRocket.normalize();
     }
-    
+
     // Dynamic camera: zoom out to keep rockets in frame
     // Calculate bounding box of all rockets
     let minX = Infinity, maxX = -Infinity;
     let minY = Infinity, maxY = -Infinity;
     let minZ = Infinity, maxZ = -Infinity;
-    
+
     activeRockets.forEach(rocket => {
         const pos = rocket.group.position;
         minX = Math.min(minX, pos.x);
@@ -869,31 +878,31 @@ function updateCameraFollow() {
         minZ = Math.min(minZ, pos.z);
         maxZ = Math.max(maxZ, pos.z);
     });
-    
+
     // Calculate center of all rockets
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
     const centerZ = (minZ + maxZ) / 2;
     const center = new THREE.Vector3(centerX, centerY, centerZ);
-    
+
     // Calculate size of bounding box
     const sizeX = maxX - minX;
     const sizeY = maxY - minY;
     const sizeZ = maxZ - minZ;
     const maxSize = Math.max(sizeX, sizeY, sizeZ, 20); // Minimum 20 units
-    
+
     // Dynamic follow distance based on rocket spread
     const followDistance = Math.max(15, maxSize * 1.5); // Zoom out to keep all in frame
     const followHeight = Math.max(10, maxSize * 0.8); // Height based on spread
-    
+
     // Position camera BEHIND the center (away from origin)
     const idealPosition = center.clone()
         .add(toRocket.multiplyScalar(followDistance))
         .add(new THREE.Vector3(0, followHeight, 0));
-    
+
     // Ensure minimum height
     idealPosition.y = Math.max(idealPosition.y, centerY + 5);
-    
+
     // Ensure camera is further from origin than rockets (so planet doesn't block)
     const centerDistance = center.length();
     const cameraDistance = idealPosition.length();
@@ -902,14 +911,14 @@ function updateCameraFollow() {
         idealPosition.copy(direction.multiplyScalar(centerDistance + followDistance + 5));
         idealPosition.y = Math.max(centerY + followHeight, 10);
     }
-    
+
     // Smooth camera movement
     camera.position.lerp(idealPosition, 0.2);
-    
+
     // Look at center of all rockets
     controls.target.lerp(center, 0.2);
     camera.lookAt(controls.target);
-    
+
     // Debug logging (throttled)
     if (Math.random() < 0.01) {
         const distToCenter = camera.position.distanceTo(center);
@@ -933,7 +942,7 @@ function animate() {
         // Only allow manual navigation when follow is disabled
         updateNavigation(delta);
     }
-    
+
     // Update controls (for damping)
     if (controls) {
         controls.update();
@@ -951,15 +960,15 @@ function animate() {
     rockets.forEach((rocket, index) => {
         if (rocket.group) {
             const rocketData = rocket.group.userData;
-            
+
             // Reset acceleration
             rocketData.acceleration.set(0, 0, 0);
-            
+
             // 1. GRAVITATIONAL ATTRACTION (inverse square law)
             const planetPosition = new THREE.Vector3(0, 0, 0);
             const toPlanet = planetPosition.clone().sub(rocket.group.position);
             const distanceToPlanet = toPlanet.length();
-            
+
             if (distanceToPlanet > 0.1) {
                 // F = GM/r^2, normalized direction
                 const gravitationalParameter = 500; // Tuned constant
@@ -967,41 +976,41 @@ function animate() {
                 const gravityForce = toPlanet.normalize().multiplyScalar(gravityMagnitude);
                 rocketData.acceleration.add(gravityForce);
             }
-            
+
             // 2. THRUST (based on Delta and remaining fuel)
             if (rocketData.fuel > 0) {
                 // Calculate forward direction based on rocket's orientation
                 const forward = new THREE.Vector3(1, 0, 0);
                 forward.applyQuaternion(rocket.group.quaternion);
-                
+
                 // Apply thrust proportional to fuel remaining
                 const currentThrust = rocketData.maxThrust * rocketData.fuel;
                 const thrustForce = forward.multiplyScalar(currentThrust * delta);
                 rocketData.acceleration.add(thrustForce);
-                
+
                 // Burn fuel (Theta = decay rate)
                 rocketData.fuel -= rocketData.fuelBurnRate * delta;
                 rocketData.fuel = Math.max(0, rocketData.fuel); // Clamp to 0
             }
-            
+
             // 3. ATMOSPHERIC DRAG (based on Vega - IV turbulence)
             const dragCoefficient = 0.1;
             const dragForce = rocketData.velocity.clone().multiplyScalar(-dragCoefficient * delta);
             rocketData.acceleration.add(dragForce);
-            
+
             // 4. Apply acceleration to velocity
             rocketData.velocity.add(rocketData.acceleration.clone().multiplyScalar(delta));
-            
+
             // Limit maximum speed
             if (rocketData.velocity.length() > rocketData.maxSpeed) {
                 rocketData.velocity.normalize().multiplyScalar(rocketData.maxSpeed);
             }
-            
+
             // 5. Apply velocity to position
             const newPosition = rocket.group.position.clone().add(
                 rocketData.velocity.clone().multiplyScalar(delta)
             );
-            
+
             // Prevent crashing into planet (minimum safe distance)
             const planetRadius = 12;
             const minSafeDistance = planetRadius + 2;
@@ -1013,13 +1022,13 @@ function animate() {
                 const velocityAlongNormal = rocketData.velocity.clone().projectOnVector(normal);
                 rocketData.velocity.sub(velocityAlongNormal.multiplyScalar(1.5)); // Bounce with damping
             }
-            
+
             // Update rocket position
             rocket.group.position.copy(newPosition);
-            
+
             // KEEP ROCKET ORIENTATION FIXED - NO SPINNING
             // Orientation is set at creation and never changes
-            
+
             // Debug: log rocket movement occasionally
             if (Math.random() < 0.01 && index === 0) { // Log ~1% of frames for first rocket
                 const speed = rocketData.velocity.length();
@@ -1027,18 +1036,18 @@ function animate() {
                 console.log(`🚀 Rocket #${index}: Pos=(${newPosition.x.toFixed(1)}, ${newPosition.y.toFixed(1)}, ${newPosition.z.toFixed(1)})`);
                 console.log(`🚀 Speed: ${speed.toFixed(2)}, Fuel: ${(rocketData.fuel * 100).toFixed(1)}%, Dist from planet: ${distFromPlanet.toFixed(1)}`);
             }
-            
+
             // Update exhaust particles
             const particles = exhaustParticles[index];
             if (particles) {
                 const positions = particles.geometry.attributes.position.array;
                 const velocities = particles.userData.velocities;
                 const lifetimes = particles.userData.lifetimes;
-                
+
                 for (let i = 0; i < positions.length / 3; i++) {
                     const i3 = i * 3;
                     lifetimes[i] -= delta * 2;
-                    
+
                     if (lifetimes[i] <= 0) {
                         // Reset particle
                         const exhaustStartX = -1.75 * 1.5; // Match rocketScale
@@ -1058,6 +1067,11 @@ function animate() {
         }
     });
 
+    // Animate breakeven rings
+    if (optionaut4D) {
+        optionaut4D.animateRings(elapsedTime);
+    }
+
     // Render scene
     if (renderer && scene && camera) {
         renderer.render(scene, camera);
@@ -1066,22 +1080,22 @@ function animate() {
 
 // Expose rocket state for AI/human interaction
 window.rocketState = rocketState;
-window.adjustRocket = function(rocketId, params) {
+window.adjustRocket = function (rocketId, params) {
     const rocket = rockets.find(r => r.group?.userData?.rocketId === rocketId);
     if (!rocket) {
         console.warn(`Rocket ${rocketId} not found`);
         return false;
     }
-    
+
     // Update state
     rocketState.updateRocketParams(rocketId, params);
-    
+
     // Update visual rocket if position changed
     if (params.position) {
         rocket.group.position.set(params.position.x, params.position.y, params.position.z);
         console.log(`🚀 Adjusted rocket ${rocketId} position to: (${params.position.x}, ${params.position.y}, ${params.position.z})`);
     }
-    
+
     // Recalculate if parameters changed
     if (params.strike || params.spot || params.iv || params.timeToExpiry) {
         const newGreeks = calculateGreeks(
@@ -1095,15 +1109,15 @@ window.adjustRocket = function(rocketId, params) {
         rocket.greeks = newGreeks;
         console.log(`🚀 Recalculated Greeks for rocket ${rocketId}`);
     }
-    
+
     return true;
 };
 
-window.getRocketState = function() {
+window.getRocketState = function () {
     return rocketState.export();
 };
 
-window.loadRocketState = function(jsonString) {
+window.loadRocketState = function (jsonString) {
     return rocketState.import(jsonString);
 };
 
