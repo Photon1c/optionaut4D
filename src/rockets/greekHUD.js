@@ -30,7 +30,7 @@ export class GreekHUD {
         this.container.id = 'greek-hud';
         this.container.style.cssText = `
             position: fixed;
-            bottom: 10px;
+            bottom: 80px;
             right: 10px;
             z-index: 1000;
             background: rgba(0, 0, 0, 0.8);
@@ -38,6 +38,7 @@ export class GreekHUD {
             border-radius: 8px;
             border: 1px solid rgba(100, 200, 255, 0.3);
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            max-width: 300px;
         `;
 
         // Title
