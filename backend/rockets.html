@@ -1,12 +1,130 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Option Rockets - 3D Options Visualization</title>
+    <title>Optionaut 4D - 3D Options Visualization</title>
     <style>
-        body { margin: 0; }
-        canvas { display: block; }
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        /* Contract Input Bar */
+        #contract-input-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 999;
+            background: rgba(0, 0, 0, 0.85);
+            padding: 12px 20px;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            border-bottom: 2px solid rgba(74, 144, 226, 0.5);
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+        }
+
+        #contract-text {
+            flex: 1;
+            padding: 10px 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(74, 144, 226, 0.5);
+            border-radius: 6px;
+            color: #ffffff;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        #contract-text:focus {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: #4a90e2;
+            box-shadow: 0 0 8px rgba(74, 144, 226, 0.3);
+        }
+
+        #contract-text::placeholder {
+            color: rgba(255, 255, 255, 0.4);
+        }
+
+        #launch-btn {
+            padding: 10px 24px;
+            background: linear-gradient(135deg, #4a90e2, #357abd);
+            border: none;
+            border-radius: 6px;
+            color: white;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        #launch-btn:hover {
+            background: linear-gradient(135deg, #357abd, #2868a8);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(74, 144, 226, 0.4);
+        }
+
+        #launch-btn:active {
+            transform: translateY(0);
+        }
+
+        #launch-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Parse status indicator */
+        #parse-status {
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            display: none;
+        }
+
+        #parse-status.success {
+            display: block;
+            background: rgba(0, 255, 0, 0.2);
+            color: #00ff00;
+            border: 1px solid #00ff00;
+        }
+
+        #parse-status.error {
+            display: block;
+            background: rgba(255, 0, 0, 0.2);
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+
+        /* Theme toggle button */
+        #theme-toggle {
+            padding: 8px 16px;
+            background: rgba(100, 200, 255, 0.2);
+            border: 1px solid rgba(100, 200, 255, 0.5);
+            border-radius: 4px;
+            color: #64c8ff;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        #theme-toggle:hover {
+            background: rgba(100, 200, 255, 0.3);
+            transform: translateY(-1px);
+        }
+
         #loading {
             position: fixed;
             top: 50%;
@@ -15,20 +133,42 @@
             font-family: Arial, sans-serif;
             font-size: 1.2em;
             color: white;
-            background: rgba(0,0,0,0.7);
+            background: rgba(0, 0, 0, 0.7);
             padding: 20px;
             border-radius: 10px;
             display: none;
         }
     </style>
 </head>
+
 <body>
-    <div id="controls" style="position: absolute; bottom: 10px; left: 10px; z-index: 1000; background: rgba(255, 255, 255, 0.8); padding: 10px; border-radius: 5px;"></div>
+    <!-- Contract Input Bar -->
+    <div id="contract-input-bar">
+        <input type="text" id="contract-text" placeholder="Enter contract: 2 SPY 600C Dec 20 @ 5.20" autocomplete="off">
+        <button id="launch-btn">Launch 🚀</button>
+        <div id="parse-status"></div>
+
+        <!-- Vol Slider -->
+        <div id="iv-controls"
+            style="display: flex; align-items: center; gap: 8px; margin-left: 16px; padding-left: 16px; border-left: 1px solid rgba(74, 144, 226, 0.3);">
+            <label style="color: #aaa; font-size: 12px; font-family: 'Courier New', monospace;">IV:</label>
+            <input type="range" id="iv-slider" min="-50" max="50" value="0" step="5" style="width: 120px;">
+            <span id="iv-display"
+                style="color: #00ff00; font-size: 12px; font-family: 'Courier New', monospace; min-width: 50px;">+0%</span>
+        </div>
+
+        <!-- Theme Toggle -->
+        <button id="theme-toggle" style="margin-left: auto;">
+            🎨 <span id="theme-name">Orbit</span>
+        </button>
+    </div>
+
     <div id="loading">Loading Scene...</div>
-    <div id="loading-bar-container" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 80%; height: 30px; background: rgba(0, 0, 0, 0.1); border-radius: 5px;">
+    <div id="loading-bar-container"
+        style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 80%; height: 30px; background: rgba(0, 0, 0, 0.1); border-radius: 5px;">
         <div id="loading-bar" style="width: 0%; height: 100%; background: #4caf50; border-radius: 5px;"></div>
     </div>
     <script type="module" src="/src/rockets/rockets-entry.js"></script>
 </body>
-</html>
 
+</html>
