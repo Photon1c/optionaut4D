@@ -24,7 +24,7 @@ export class LiveHUD {
         this.container.id = 'live-hud';
         this.container.style.cssText = `
             position: fixed;
-            top: 10px;
+            top: 70px;
             left: 10px;
             z-index: 1000;
             background: rgba(0, 0, 0, 0.7);
