@@ -13,16 +13,11 @@ export default {
     assetsDir: 'assets',
     rollupOptions: {
       input: {
-        rockets: resolve(__dirname, 'public/rockets.html'), // Non-parser version
+        rockets: resolve(__dirname, 'backend/rockets.html'),
       },
       output: {
-        // Ensure consistent naming for debugging - lowercase for compatibility
-        entryFileNames: (chunkInfo) => {
-          // Force lowercase name for compatibility (Grok and other tools)
-          const name = 'rockets'; // Always use lowercase
-          // Vite/Rollup will replace [hash] placeholder even in function return
-          return `assets/${name}-[hash].js`;
-        },
+        // Ensure consistent naming for debugging
+        entryFileNames: 'assets/[name]-[hash].js',
         chunkFileNames: 'assets/[name]-[hash].js',
         assetFileNames: 'assets/[name]-[hash].[ext]'
       }
@@ -32,12 +27,5 @@ export default {
     esbuildOptions: {
       target: 'esnext'
     }
-  },
-  resolve: {
-    alias: {
-      // Ensure consistent path resolution for Three.js modules
-      '@': resolve(__dirname, 'src')
-    }
   }
 };
-
