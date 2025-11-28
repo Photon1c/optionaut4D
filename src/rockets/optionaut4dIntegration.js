@@ -20,7 +20,7 @@ export class Optionaut4DIntegration {
         this.breakevenRings = [];
         this.lossZone = null;
 
-        this.currentSpot = 100;
+        this._currentSpot = 100;
         this.planetRadius = 12;
 
         // Store reference to rockets array for reset
@@ -30,10 +30,22 @@ export class Optionaut4DIntegration {
         this.init();
     }
 
+    get currentSpot() {
+        return this._currentSpot;
+    }
+
+    set currentSpot(value) {
+        this._currentSpot = value;
+        if (this.liveHUD) {
+            this.liveHUD.updateSpotPrice(value);
+        }
+    }
+
     init() {
         // Create HUDs
         this.liveHUD = new LiveHUD();
-        this.greekHUD = new GreekHUD();
+        // Don't create global GreekHUD - we'll use per-rocket HUDs instead
+        // this.greekHUD = new GreekHUD();
 
         // Create loss zone
         this.lossZone = createLossZone(this.planetRadius);
@@ -133,6 +145,7 @@ export class Optionaut4DIntegration {
 
         // Create rocket for each quantity
         const absQuantity = Math.abs(quantity);
+        let firstRocket = null;
         for (let i = 0; i < absQuantity; i++) {
             const rocket = this.createRocket({
                 type: type,
@@ -145,9 +158,17 @@ export class Optionaut4DIntegration {
                 ticker: ticker
             });
 
-            // Select first rocket
+            // Select first rocket and set as camera target
             if (i === 0) {
+                firstRocket = rocket;
                 this.selectRocket(rocket, contract);
+                
+                // Set camera to follow this rocket
+                if (window.cameraFollowTarget !== undefined) {
+                    window.cameraFollowTarget = rocket;
+                    window.cameraFollowEnabled = true;
+                    console.log('📷 Camera will follow newly launched rocket');
+                }
             }
         }
 
@@ -166,13 +187,7 @@ export class Optionaut4DIntegration {
 
     selectRocket(rocket, contract) {
         this.selectedRocket = rocket;
-
-        // Update Greek HUD with rocket's Greeks
-        if (rocket.userData && rocket.userData.greeks) {
-            const greeks = rocket.userData.greeks;
-            const fuel = rocket.userData.fuel || 1.0;
-            this.greekHUD.update(greeks, fuel);
-        }
+        // Per-rocket HUD will be shown via click handler
     }
 
     updateLiveHUD(contract) {
@@ -185,14 +200,8 @@ export class Optionaut4DIntegration {
     }
 
     updateGreekHUD(rocket) {
-        if (!rocket || !rocket.userData) return;
-
-        const greeks = rocket.userData.greeks || {
-            delta: 0, gamma: 0, vega: 0, theta: 0, rho: 0
-        };
-        const fuel = rocket.userData.fuel || 1.0;
-
-        this.greekHUD.update(greeks, fuel);
+        // Per-rocket HUDs are updated individually
+        // This method is kept for compatibility but does nothing
     }
 
     animateRings(time) {
@@ -244,9 +253,10 @@ export class Optionaut4DIntegration {
         this.liveHUD.updateSpotPrice(this.currentSpot, 'SPY');
         this.liveHUD.updateDTE(7);
 
-        this.greekHUD.update({
-            delta: 0, gamma: 0, vega: 0, theta: 0, rho: 0
-        }, 1.0);
+        // Per-rocket HUDs will be managed individually
+        // this.greekHUD.update({
+        //     delta: 0, gamma: 0, vega: 0, theta: 0, rho: 0
+        // }, 1.0);
 
         this.selectedRocket = null;
 
@@ -255,7 +265,8 @@ export class Optionaut4DIntegration {
 
     destroy() {
         if (this.liveHUD) this.liveHUD.destroy();
-        if (this.greekHUD) this.greekHUD.destroy();
+        // Per-rocket HUDs are managed separately
+        // if (this.greekHUD) this.greekHUD.destroy();
         if (this.lossZone) this.scene.remove(this.lossZone);
         this.breakevenRings.forEach(ring => this.scene.remove(ring));
     }
