@@ -6,9 +6,6 @@ import { VolSlider } from './volSlider.js';
 import { ThemeSystem } from './themeSystem.js';
 import { ExportSystem } from './exportSystem.js';
 import { GIFExporter } from './gifExporter.js';
-import { RocketHUD } from './rocketHUD.js';
-import { createRocketModel, createExhaustParticles } from './rocketmodel.js';
-import { calculateProfitLoss, calculateIntrinsicValue, isInTheMoney, calculateBreakeven } from './rocketMetrics.js';
 
 console.log('Option Rockets entry script started');
 
@@ -19,27 +16,17 @@ let rockets = [];
 let trajectoryLines = [];
 let breakevenRings = [];
 let controlsPanel = null;
-let currentSpot = 680; // Underlying price (default SPY price)
+let currentSpot = 100; // Underlying price
 let timeToExpiry = 1.0; // Years
 let currentRocket = null;
 let cameraFollowTarget = null;
-let cameraFollowEnabled = false;
+let cameraFollowEnabled = true;
 let exhaustParticles = [];
 let optionaut4D = null; // Optionaut 4D integration
 let volSlider = null; // Volatility slider
 let themeSystem = null; // Theme system
 let exportSystem = null; // Export system
 let gifExporter = null; // GIF exporter
-let rocketHUD = null; // Per-rocket HUD
-let raycaster = null; // For clicking on rockets
-let mouse = new THREE.Vector2(); // Mouse position for raycasting
-let hoveredGauge = null; // Currently hovered gauge for tooltip
-let gaugeTooltips = new Map(); // Map of gauge sprites to tooltip divs
-let isInitializing = false; // Prevent multiple initializations
-let isInitialized = false; // Track initialization state
-
-// API configuration
-const API_BASE_URL = 'http://localhost:5001/api';
 
 // Navigation controls
 let moveState = { forward: false, backward: false, left: false, right: false, up: false, down: false };
@@ -47,35 +34,7 @@ let mouseState = { isDown: false, lastX: 0, lastY: 0 };
 let moveSpeed = 5.0;
 let lookSpeed = 0.002;
 
-// Fetch real-time spot price from backend
-async function fetchSpotPrice(ticker = 'SPY') {
-    try {
-        const response = await fetch(`${API_BASE_URL}/stock/${ticker}`);
-        if (!response.ok) {
-            throw new Error(`API returned ${response.status}`);
-        }
-        const data = await response.json();
-        
-        // Try multiple possible field names for the price
-        const price = data.price || data.current_price || data.last_price || data.close || data.last || data.value;
-        
-        if (price && typeof price === 'number' && price > 0) {
-            console.log(`✅ Fetched ${ticker} price: $${price.toFixed(2)} from API`);
-            return price;
-        } else {
-            // Log the actual response structure for debugging
-            console.warn(`⚠️ Price not found in expected fields. API response:`, data);
-            console.warn(`⚠️ Available fields:`, Object.keys(data));
-            return 680; // Fallback to default SPY price
-        }
-    } catch (error) {
-        console.error(`❌ Failed to fetch ${ticker} price:`, error);
-        console.error(`   API URL: ${API_BASE_URL}/stock/${ticker}`);
-        return 680; // Fallback to default SPY price
-    }
-}
-
-
+const API_BASE_URL = 'http://localhost:5001/api';
 
 // Update loading bar
 function updateLoadingBar(progress) {
@@ -117,35 +76,8 @@ function calculateGreeks(spot, strike, timeToExpiry, iv, r = 0.02, optionType = 
 }
 
 async function initScene() {
-    // Prevent multiple initializations
-    if (isInitializing) {
-        console.warn('⚠️ Scene initialization already in progress, skipping...');
-        return;
-    }
-    
-    // If already initialized, clean up first (handles page reloads)
-    if (isInitialized) {
-        console.warn('⚠️ Scene already initialized, cleaning up first...');
-        cleanupScene();
-        // Wait a bit for cleanup to complete
-        await new Promise(resolve => setTimeout(resolve, 200));
-    }
-    
-    isInitializing = true;
-    
     try {
         console.log('Initializing Option Rockets scene');
-
-        // Fetch real spot price
-        console.log('Fetching real-time spot price...');
-        currentSpot = await fetchSpotPrice('SPY');
-        console.log(`✅ Current SPY Price: $${currentSpot}`);
-        
-        // Update LiveHUD immediately with real price
-        if (optionaut4D && optionaut4D.liveHUD) {
-            optionaut4D.liveHUD.updateSpotPrice(currentSpot, 'SPY');
-        }
-
         updateLoadingBar(10);
 
         // Initialize clock
@@ -160,108 +92,25 @@ async function initScene() {
             0.1,
             1000
         );
-        // Set initial camera position from user preference
-        camera.position.set(9.48, 43.63, 20.21);
+        // Start closer to where rocket will be (more zoomed in)
+        camera.position.set(50, 40, 60);
+        camera.lookAt(30, 25, 0); // Look toward where rocket will spawn
         console.log('Camera set up');
         updateLoadingBar(20);
 
         // Renderer setup
         console.log('Setting up renderer');
-        
-        // Check if renderer already exists and dispose it properly
-        if (renderer) {
-            console.warn('⚠️ Existing renderer found, disposing...');
-            try {
-                // Stop animation loop first
-                if (renderer.setAnimationLoop) {
-                    renderer.setAnimationLoop(null);
-                }
-                // Dispose renderer
-                renderer.dispose();
-                // Remove canvas from DOM
-                if (renderer.domElement && renderer.domElement.parentNode) {
-                    renderer.domElement.parentNode.removeChild(renderer.domElement);
-                }
-                renderer = null;
-                // Wait a bit for context to be fully released
-                await new Promise(resolve => setTimeout(resolve, 100));
-            } catch (e) {
-                console.warn('Error disposing existing renderer:', e);
-            }
-        }
-        
-        // Check if canvas already exists in body and remove it
-        const existingCanvas = document.querySelector('canvas');
-        if (existingCanvas && existingCanvas.parentNode) {
-            console.warn('⚠️ Existing canvas found, removing...');
-            try {
-                existingCanvas.parentNode.removeChild(existingCanvas);
-                // Wait a bit for context to be fully released
-                await new Promise(resolve => setTimeout(resolve, 100));
-            } catch (e) {
-                console.warn('Error removing existing canvas:', e);
-            }
-        }
-        
-        // Try to create renderer with retry mechanism
-        let rendererCreated = false;
-        let retryCount = 0;
-        const maxRetries = 3;
-        
-        while (!rendererCreated && retryCount < maxRetries) {
-            try {
-                renderer = new THREE.WebGLRenderer({
-                    antialias: true,
-                    powerPreference: "high-performance",
-                    preserveDrawingBuffer: false, // Better performance
-                    failIfMajorPerformanceCaveat: false // Allow fallback
-                });
-                
-                // Verify context was created
-                if (!renderer.getContext()) {
-                    throw new Error('WebGL context not available');
-                }
-                
-                // Handle context loss
-                renderer.domElement.addEventListener('webglcontextlost', (event) => {
-                    console.warn('⚠️ WebGL context lost');
-                    event.preventDefault();
-                    // Mark as not initialized so we can reinitialize
-                    isInitialized = false;
-                });
-                
-                renderer.domElement.addEventListener('webglcontextrestored', () => {
-                    console.log('✅ WebGL context restored');
-                    // Reinitialize if needed
-                    if (!isInitialized) {
-                        console.log('🔄 Reinitializing scene after context restore...');
-                        initScene();
-                    }
-                });
-                
-                renderer.setSize(window.innerWidth, window.innerHeight);
-                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-                renderer.shadowMap.enabled = true;
-                renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-                document.body.appendChild(renderer.domElement);
-                console.log('✅ Renderer set up successfully');
-                rendererCreated = true;
-                updateLoadingBar(30);
-            } catch (error) {
-                retryCount++;
-                console.warn(`⚠️ Error creating WebGL renderer (attempt ${retryCount}/${maxRetries}):`, error);
-                
-                if (retryCount < maxRetries) {
-                    // Wait longer between retries
-                    const waitTime = retryCount * 500; // 500ms, 1000ms, 1500ms
-                    console.log(`⏳ Waiting ${waitTime}ms before retry...`);
-                    await new Promise(resolve => setTimeout(resolve, waitTime));
-                } else {
-                    console.error('❌ Failed to create WebGL renderer after', maxRetries, 'attempts');
-                    throw new Error(`Error creating WebGL context after ${maxRetries} attempts: ${error.message}`);
-                }
-            }
-        }
+        renderer = new THREE.WebGLRenderer({
+            antialias: true,
+            powerPreference: "high-performance"
+        });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+        console.log('Renderer set up');
+        updateLoadingBar(30);
 
         // Scene setup
         console.log('Setting up scene');
@@ -316,8 +165,8 @@ async function initScene() {
         underlyingPlanet.receiveShadow = true;
         scene.add(underlyingPlanet);
 
-        // Add planet label - position below planet to avoid being covered by rockets
-        const planetLabel = createLabel('Underlying Price', 0, -planetRadius - 3, 0);
+        // Add planet label
+        const planetLabel = createLabel('Underlying Price', 0, planetRadius + 3, 0);
         scene.add(planetLabel);
         console.log(`✅ Planet created at origin (0, 0, 0) with radius ${planetRadius}`);
         updateLoadingBar(60);
@@ -340,15 +189,10 @@ async function initScene() {
         controls.dampingFactor = 0.05;
         controls.minDistance = 10;
         controls.maxDistance = 500;
-        controls.target.set(6.48, 39.43, 11.64); // Set initial target from user preference
+        controls.target.set(30, 25, 0); // Target near where rocket will be
         controls.enabled = true; // Enable manual controls
-        camera.lookAt(controls.target); // Look at the target
         console.log('Controls set up');
         updateLoadingBar(80);
-        
-        // Initialize raycaster for gauge hover detection
-        raycaster = new THREE.Raycaster();
-        console.log('Raycaster initialized for gauge hover detection');
 
         // Setup keyboard and mouse navigation
         setupNavigationControls();
@@ -357,26 +201,66 @@ async function initScene() {
         console.log('Creating UI controls');
         createControlsPanel();
         updateLoadingBar(90);
-        
-        // Create title and info panel
-        createTitleAndInfoPanel();
 
-        // Create default rocket (695 SPY Call, 60 DTE)
+        // Create default rocket (0DTE SPY call) - wait a moment for scene to settle
+        setTimeout(() => {
             const rocket = createRocket({
                 type: 'call',
-                strike: 695,
+                strike: 100,
                 spot: currentSpot,
-                timeToExpiry: 60 / 365, // 60 days to expiry
+                timeToExpiry: 0.0027, // ~1 day
                 iv: 0.16,
                 entry: 0.5
             });
 
-        // Camera position is set to user preference above, skip automatic repositioning
-        // (User has specified initial camera position via display_camera())
-        if (rocket) {
-            cameraFollowTarget = rocket;
-            console.log(`📷 Camera set to user preference position, rocket will be followed if enabled`);
-        }
+            // Smoothly transition camera to follow rocket after creation
+            setTimeout(() => {
+                if (cameraFollowTarget && rocket) {
+                    const targetPos = cameraFollowTarget.position.clone();
+                    console.log(`📷 Positioning camera to follow rocket at: (${targetPos.x.toFixed(2)}, ${targetPos.y.toFixed(2)}, ${targetPos.z.toFixed(2)})`);
+
+                    // Position camera behind and above rocket, ensuring we can see both planet and rocket
+                    const toRocket = targetPos.clone();
+                    if (toRocket.length() > 0.1) {
+                        toRocket.normalize();
+                    } else {
+                        toRocket.set(1, 0, 0);
+                    }
+
+                    // Position camera zoomed in on rocket (Florida launch pad perspective)
+                    // Position BEHIND rocket (away from origin) so planet doesn't block
+                    const followDistance = 8; // Close for realistic perspective
+                    const followHeight = 4; // Slightly above rocket
+
+                    // Position BEHIND rocket (away from origin)
+                    const rocketDistance = targetPos.length();
+                    const idealPosition = targetPos.clone()
+                        .add(toRocket.multiplyScalar(followDistance))
+                        .add(new THREE.Vector3(0, followHeight, 0));
+
+                    // Ensure camera is further from origin than rocket
+                    if (idealPosition.length() <= rocketDistance + 2) {
+                        const direction = idealPosition.clone().normalize();
+                        idealPosition.copy(direction.multiplyScalar(rocketDistance + followDistance + 2));
+                        idealPosition.y = Math.max(targetPos.y + followHeight, 5);
+                    }
+
+                    camera.position.copy(idealPosition);
+
+                    // Look directly at rocket
+                    controls.target.copy(targetPos);
+                    camera.lookAt(controls.target);
+
+                    const distToRocket = camera.position.distanceTo(targetPos);
+                    console.log(`📷 ===== CAMERA POSITIONED (ZOOMED IN) =====`);
+                    console.log(`📷 Camera: (${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)})`);
+                    console.log(`📷 Rocket: (${targetPos.x.toFixed(2)}, ${targetPos.y.toFixed(2)}, ${targetPos.z.toFixed(2)})`);
+                    console.log(`📷 Distance to rocket: ${distToRocket.toFixed(2)}`);
+                    console.log(`📷 Camera dist from origin: ${camera.position.length().toFixed(2)}, Rocket dist: ${rocketDistance.toFixed(2)}`);
+                    console.log(`📷 Camera is BEHIND rocket (further from origin) - planet won't block view`);
+                }
+            }, 500);
+        }, 200);
 
         // Initialize Optionaut 4D Integration (contract parser, HUDs, profit zones)
         console.log('Initializing Optionaut 4D integration...');
@@ -384,15 +268,6 @@ async function initScene() {
         optionaut4D.currentSpot = currentSpot;
         optionaut4D.planetRadius = 12;
         optionaut4D.setRocketsArrayRef(rockets, exhaustParticles); // Pass array references for reset
-        
-        // Expose camera follow variables for Optionaut4D integration
-        window.cameraFollowTarget = cameraFollowTarget;
-        window.cameraFollowEnabled = cameraFollowEnabled;
-        
-        // Expose camera and controls for display_camera function
-        window._rocketCamera = camera;
-        window._rocketControls = controls;
-        
         console.log('✅ Optionaut 4D integration ready');
 
         // Initialize Vol Slider
@@ -417,35 +292,6 @@ async function initScene() {
             });
         }
         console.log('✅ Vol slider ready');
-
-        // Setup periodic spot price updates for LiveHUD
-        console.log('Setting up periodic spot price updates...');
-        const updateSpotPrice = async () => {
-            try {
-                const newSpot = await fetchSpotPrice('SPY');
-                if (newSpot && newSpot !== currentSpot && newSpot > 0) {
-                    const oldSpot = currentSpot;
-                    currentSpot = newSpot;
-                    if (optionaut4D) {
-                        optionaut4D.currentSpot = newSpot;
-                        if (optionaut4D.liveHUD) {
-                            optionaut4D.liveHUD.updateSpotPrice(newSpot, 'SPY');
-                        }
-                    }
-                    console.log(`📊 Updated SPY price: $${oldSpot.toFixed(2)} → $${newSpot.toFixed(2)}`);
-                } else if (newSpot === currentSpot) {
-                    // Price unchanged, but log periodically for debugging
-                    if (Math.random() < 0.1) { // Log 10% of the time
-                        console.log(`📊 SPY price unchanged: $${newSpot.toFixed(2)}`);
-                    }
-                }
-            } catch (error) {
-                console.error('❌ Failed to update spot price:', error);
-            }
-        };
-        // Update every 5 seconds
-        setInterval(updateSpotPrice, 5000);
-        console.log('✅ Spot price updates scheduled (every 5 seconds)');
 
         // Initialize Theme System
         console.log('Initializing theme system...');
@@ -532,77 +378,10 @@ async function initScene() {
         // Start animation loop
         animate();
         console.log('Option Rockets scene initialization complete!');
-        updateLoadingBar(100);
-        isInitialized = true;
-        console.log('✅ Scene initialization complete');
     } catch (error) {
-        console.error('❌ Error during scene initialization:', error);
-        isInitialized = false;
+        console.error('Error during scene initialization:', error);
         updateLoadingBar(0);
-        throw error;
-    } finally {
-        isInitializing = false;
     }
-}
-
-// Cleanup function
-function cleanupScene() {
-    console.log('🧹 Cleaning up scene...');
-    
-    // Stop animation loop first
-    if (renderer) {
-        try {
-            renderer.setAnimationLoop(null);
-        } catch (e) {
-            console.warn('Error stopping animation loop:', e);
-        }
-    }
-    
-    // Dispose renderer
-    if (renderer) {
-        try {
-            // Get context before disposing
-            const context = renderer.getContext();
-            if (context) {
-                // Force lose context if still active
-                const loseContext = context.getExtension('WEBGL_lose_context');
-                if (loseContext) {
-                    loseContext.loseContext();
-                }
-            }
-            renderer.dispose();
-            if (renderer.domElement && renderer.domElement.parentNode) {
-                renderer.domElement.parentNode.removeChild(renderer.domElement);
-            }
-        } catch (e) {
-            console.warn('Error disposing renderer:', e);
-        }
-        renderer = null;
-    }
-    
-    // Remove any remaining canvas elements
-    const canvases = document.querySelectorAll('canvas');
-    canvases.forEach(canvas => {
-        try {
-            if (canvas.parentNode) {
-                canvas.parentNode.removeChild(canvas);
-            }
-        } catch (e) {
-            console.warn('Error removing canvas:', e);
-        }
-    });
-    
-    // Clear arrays
-    rockets = [];
-    trajectoryLines = [];
-    breakevenRings = [];
-    exhaustParticles = [];
-    
-    // Reset state
-    isInitialized = false;
-    isInitializing = false;
-    
-    console.log('✅ Scene cleaned up');
 }
 
 // Create a rocket representing an option
@@ -610,47 +389,132 @@ function createRocket(params) {
     const { type, strike, spot, timeToExpiry, iv, entry } = params;
     const greeks = calculateGreeks(spot, strike, timeToExpiry, iv, 0.02, type);
 
-    const rocketScale = 2.125; // Reduced by 15% from 2.5
-    console.log(`🚀 Creating rocket with scale: ${rocketScale}x`);
-    
-    // Create rocket model using the clean model builder
-    const exhaustLength = Math.abs(greeks.delta) * 8 * rocketScale;
-    
-    // Create particle system callback
-    const createParticles = (params) => {
-        const particles = createExhaustParticles({
-            startX: params.startX,
-            baseRadius: params.baseRadius,
-            color: type === 'call' ? 0x00ffff : 0xff4444,
-            count: 150
-        });
-        exhaustParticles.push(particles);
-        return particles;
-    };
-    
-    const rocketGroup = createRocketModel({
-        type,
-        scale: rocketScale,
-        exhaustLength,
-        createParticles
-    });
+    // Rocket group
+    const rocketGroup = new THREE.Group();
 
-    // Position will be set later relative to spot price planet
-    // Initial position will be calculated when spot price planet is created
+    // Enhanced rocket body (cylinder with fins) - larger for visibility
+    const rocketScale = 1.5; // Scale up rocket for better visibility
+    console.log(`🚀 Creating rocket with scale: ${rocketScale}x`);
+    const bodyGeometry = new THREE.CylinderGeometry(0.6 * rocketScale, 0.7 * rocketScale, 3.5 * rocketScale, 16);
+    const bodyColor = type === 'call' ? 0x4a90e2 : 0xe24a4a;
+    const bodyMaterial = new THREE.MeshStandardMaterial({
+        color: bodyColor,
+        emissive: bodyColor,
+        emissiveIntensity: 0.5,
+        roughness: 0.3,
+        metalness: 0.7
+    });
+    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+    body.rotation.z = Math.PI / 2;
+    body.castShadow = true;
+    rocketGroup.add(body);
+
+    // Rocket nose (cone with tip)
+    const noseGeometry = new THREE.ConeGeometry(0.6 * rocketScale, 1.5 * rocketScale, 16);
+    const nose = new THREE.Mesh(noseGeometry, bodyMaterial);
+    nose.position.x = 3.25 * rocketScale;
+    nose.castShadow = true;
+    rocketGroup.add(nose);
+
+    // Add fins (3 fins for stability)
+    for (let i = 0; i < 3; i++) {
+        const finGeometry = new THREE.BoxGeometry(0.1, 0.8, 0.3);
+        const fin = new THREE.Mesh(finGeometry, bodyMaterial);
+        const angle = (i / 3) * Math.PI * 2;
+        fin.position.x = -0.5;
+        fin.position.y = Math.cos(angle) * 0.5;
+        fin.position.z = Math.sin(angle) * 0.5;
+        fin.rotation.z = Math.cos(angle) * 0.3;
+        fin.rotation.y = Math.sin(angle) * 0.3;
+        rocketGroup.add(fin);
+    }
+
+    // Position rocket based on strike (periapsis = closest approach to planet)
+    // Strike maps to distance from planet - better scaling
+    const strikeDistance = Math.abs(strike - spot) * 3; // Increased scale for better visibility
+    const angle = 0; // Start at a fixed angle (0 degrees = positive X axis) for visibility
+    // Ensure minimum distance from planet so rocket is visible
+    const minDistance = 30; // Minimum 30 units from planet center (planet radius is 10)
+    const actualDistance = Math.max(minDistance, strikeDistance);
+    const x = Math.cos(angle) * actualDistance;
+    const z = Math.sin(angle) * actualDistance;
+    const y = Math.max(25, greeks.price * 15); // Height = option price, better scaling, minimum 25 units
+
+    rocketGroup.position.set(x, y, z);
+    console.log(`🚀 ===== ROCKET CREATED =====`);
+    console.log(`🚀 Position: (${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)})`);
+    console.log(`🚀 Strike: ${strike}, Spot: ${spot}, Distance from planet: ${actualDistance.toFixed(2)}`);
+    console.log(`🚀 Greeks - Delta: ${greeks.delta.toFixed(3)}, Theta: ${greeks.theta.toFixed(3)}, Price: $${greeks.price.toFixed(2)}`);
+    console.log(`🚀 Planet at origin (0, 0, 0), Rocket at X=${x.toFixed(2)}`);
 
     // Orient rocket based on delta (thrust direction)
-    const deltaAngle = (greeks.delta - 0.5) * Math.PI * 0.2;
+    // Simplified orientation - just point forward with slight angle
+    const deltaAngle = (greeks.delta - 0.5) * Math.PI * 0.2; // Reduced angle range
     if (type === 'put') {
-        rocketGroup.rotation.y = Math.PI; // Puts point in opposite direction
+        rocketGroup.rotation.y = Math.PI; // Puts point downward
     }
     rocketGroup.rotation.z = deltaAngle;
-    rocketGroup.rotation.x = 0;
-    rocketGroup.rotation.order = 'XYZ';
-    
-    // Store exhaust parameters for particle animation (from rocket model)
-    const exhaustBaseRadius = rocketGroup.userData.exhaustBaseRadius || (0.6 * rocketScale * 0.65);
-    rocketGroup.userData.exhaustStartX = 0; // Rocket base
-    rocketGroup.userData.exhaustBaseRadius = exhaustBaseRadius;
+    rocketGroup.rotation.x = 0; // No pitch
+    rocketGroup.rotation.order = 'XYZ'; // Set rotation order for stability
+
+    // Create enhanced exhaust trail with particles (scaled to match rocket)
+    const exhaustLength = Math.abs(greeks.delta) * 10 * rocketScale;
+    const exhaustGeometry = new THREE.ConeGeometry(0.4 * rocketScale, exhaustLength, 8);
+    const exhaustColor = type === 'call' ? 0x00ffff : 0xff4444;
+    const exhaustMaterial = new THREE.MeshStandardMaterial({
+        color: exhaustColor,
+        emissive: exhaustColor,
+        emissiveIntensity: 0.9,
+        transparent: true,
+        opacity: 0.8
+    });
+    const exhaust = new THREE.Mesh(exhaustGeometry, exhaustMaterial);
+    exhaust.position.x = -1.75 * rocketScale - exhaustLength / 2;
+    exhaust.rotation.z = Math.PI;
+    rocketGroup.add(exhaust);
+
+    // Create particle system for exhaust
+    const particleCount = 100;
+    const particlesGeometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(particleCount * 3);
+    const velocities = new Float32Array(particleCount * 3);
+    const lifetimes = new Float32Array(particleCount);
+
+    const exhaustStartX = -1.75 * rocketScale;
+    for (let i = 0; i < particleCount; i++) {
+        const i3 = i * 3;
+        positions[i3] = exhaustStartX;
+        positions[i3 + 1] = (Math.random() - 0.5) * 0.8 * rocketScale;
+        positions[i3 + 2] = (Math.random() - 0.5) * 0.8 * rocketScale;
+        velocities[i3] = -Math.random() * 3 - 1.5;
+        velocities[i3 + 1] = (Math.random() - 0.5) * 0.8;
+        velocities[i3 + 2] = (Math.random() - 0.5) * 0.8;
+        lifetimes[i] = Math.random();
+    }
+
+    particlesGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const particlesMaterial = new THREE.PointsMaterial({
+        color: exhaustColor,
+        size: 0.1,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending
+    });
+    const particles = new THREE.Points(particlesGeometry, particlesMaterial);
+    particles.userData.velocities = velocities;
+    particles.userData.lifetimes = lifetimes;
+    particles.userData.resetPosition = () => {
+        for (let i = 0; i < particleCount; i++) {
+            const i3 = i * 3;
+            positions[i3] = -1.25;
+            positions[i3 + 1] = (Math.random() - 0.5) * 0.5;
+            positions[i3 + 2] = (Math.random() - 0.5) * 0.5;
+            lifetimes[i] = Math.random();
+        }
+        particlesGeometry.attributes.position.needsUpdate = true;
+    };
+    rocketGroup.add(particles);
+    exhaustParticles.push(particles);
 
     // Create trajectory line
     const trajectory = createTrajectory(spot, strike, greeks, type);
@@ -662,151 +526,19 @@ function createRocket(params) {
     scene.add(breakevenRing);
     breakevenRings.push(breakevenRing);
 
-    // Add launch price line (strike price reference line)
-    const launchPriceLine = createLaunchPriceLine(strike, spot, type);
-    scene.add(launchPriceLine);
-    if (launchPriceLine.userData.label) {
-        scene.add(launchPriceLine.userData.label);
-    }
-
-    scene.add(rocketGroup);
-    // Store spot price and launch price per rocket (like optionaut-app)
-    const launchPrice = strike; // Fixed launch/strike price
-    const currentSpotPrice = spot; // Current spot price (can change)
-    const premium = entry || greeks.price; // Premium paid (entry price or current price if not specified)
-    
-    // Create individual spot price planet for this rocket
-    const spotPricePlanet = createSpotPricePlanet(currentSpotPrice, rockets.length);
-    const planetAngle = (rockets.length * 60) * (Math.PI / 180); // Space planets around origin
-    const planetRadius = 12;
-    
-    // Spot price planet will be positioned at rocket center (updated in animate loop)
-    // Initially position it at origin, will be moved to rocket center
-    spotPricePlanet.position.set(0, 0, 0);
-    if (spotPricePlanet.userData.label) {
-        const labelPlanetRadius = 1.5; // Match the smaller planet size
-        spotPricePlanet.userData.label.position.set(0, labelPlanetRadius, 0);
-        scene.add(spotPricePlanet.userData.label);
-    }
-    scene.add(spotPricePlanet);
-    
-    // Calculate P/L
-    const profitLoss = calculateProfitLoss(greeks.price, premium, 1);
-    const intrinsicValue = calculateIntrinsicValue(currentSpotPrice, strike, type);
-    const isITM = isInTheMoney(currentSpotPrice, strike, type);
-    
-    // Calculate angle for spacing rockets around spot planet
-    const rocketAngle = planetAngle;
-    
-    // Position rocket relative to its spot price planet (not origin)
-    // Use improved scaling with sigmoid-like function for smoother OTM/ATM behavior
-    const strikeDiff = Math.abs(strike - currentSpotPrice);
-    const strikePercent = strikeDiff / currentSpotPrice; // Percentage difference
-    
-    // Sigmoid-like scaling: closer to ATM = closer to planet, far OTM = further but bounded
-    // Use logarithmic scaling for better distribution
-    const baseDistance = Math.log(1 + strikePercent * 10) * 2; // Logarithmic scaling
-    const minDistance = 3; // Much closer minimum distance
-    const maxDistance = 20; // Reduced max distance
-    const actualDistance = Math.max(minDistance, Math.min(maxDistance, baseDistance));
-    
-    // Determine direction: ITM moves away from planet, OTM moves toward planet
-    // For calls: ITM = spot > strike (away), OTM = spot < strike (toward)
-    // For puts: ITM = spot < strike (away), OTM = spot > strike (toward)
-    const directionMultiplier = isITM ? 1 : -1; // ITM: away (+1), OTM: toward (-1)
-    
-    // Calculate rocket position based on spot price location
-    const spotX = (currentSpotPrice - 680) * 0.3; // Scale spot price to X position (centered around 680)
-    const spotZ = Math.sin(rocketAngle) * 20; // Space rockets around
-    
-    // Rocket position relative to spot price location
-    const rocketX = spotX + Math.cos(rocketAngle) * actualDistance * directionMultiplier;
-    const rocketZ = spotZ + Math.sin(rocketAngle) * actualDistance * directionMultiplier;
-    // Height = option price (scaled appropriately)
-    const rocketY = Math.max(15, greeks.price * 20);
-    
-    rocketGroup.position.set(rocketX, rocketY, rocketZ);
-    
-    // Update target position
-    rocketGroup.userData.targetPosition = new THREE.Vector3(rocketX, rocketY, rocketZ);
-    rocketGroup.userData.strikeDistance = actualDistance;
-    rocketGroup.userData.angle = rocketAngle;
-    rocketGroup.userData.spotPlanetPosition = new THREE.Vector3(rocketX, rocketY, rocketZ); // Planet follows rocket
-    rocketGroup.userData.isWarpSpeed = false; // Initialize warp speed flag
-    rocketGroup.userData.isWarpSpeed = false; // Initialize warp speed flag
-    
-    // Create Greek gauges - position ABOVE rocket in horizontal row for better visibility
-    // Ensure gauges are well above planet surface (planet radius is 12, so use Y > 20)
-    const gaugeHeight = Math.max(rocketY + 8, 25); // Well above rocket, minimum 25 to clear planet
-    const gaugeSpacing = 5; // Horizontal spacing between gauges
-    const gaugeStartX = rocketX - (gaugeSpacing * 2); // Center the row around rocket (adjusted for 5 gauges)
-    
-    // Position gauges in a horizontal row above the rocket
-    const gaugeY = gaugeHeight;
-    const gaugeZ = rocketZ;
-    
-    const deltaGauge = createGreekGauge('Delta', 'Δ', greeks.delta, greeks.delta > 0 ? 'rgb(16, 185, 129)' : 'rgb(239, 68, 68)', new THREE.Vector3(gaugeStartX, gaugeY, gaugeZ));
-    const gammaGauge = createGreekGauge('Gamma', 'Γ', greeks.gamma, 'rgb(168, 85, 247)', new THREE.Vector3(gaugeStartX + gaugeSpacing, gaugeY, gaugeZ));
-    const thetaGauge = createGreekGauge('Theta', 'Θ', Math.abs(greeks.theta), 'rgb(245, 158, 11)', new THREE.Vector3(gaugeStartX + gaugeSpacing * 2, gaugeY, gaugeZ));
-    const vegaGauge = createGreekGauge('Vega', 'ν', greeks.vega, 'rgb(59, 130, 246)', new THREE.Vector3(gaugeStartX + gaugeSpacing * 3, gaugeY, gaugeZ));
-    const ivGauge = createGreekGauge('IV', 'σ', iv, 'rgb(255, 100, 150)', new THREE.Vector3(gaugeStartX + gaugeSpacing * 4, gaugeY, gaugeZ));
-    
-    // Ensure gauges are visible
-    deltaGauge.visible = true;
-    gammaGauge.visible = true;
-    thetaGauge.visible = true;
-    vegaGauge.visible = true;
-    ivGauge.visible = true;
-    
-    // Make gauges larger for better visibility
-    deltaGauge.scale.set(4, 6, 1);
-    gammaGauge.scale.set(4, 6, 1);
-    thetaGauge.scale.set(4, 6, 1);
-    vegaGauge.scale.set(4, 6, 1);
-    ivGauge.scale.set(4, 6, 1);
-    
-    scene.add(deltaGauge);
-    scene.add(gammaGauge);
-    scene.add(thetaGauge);
-    scene.add(vegaGauge);
-    scene.add(ivGauge);
-    
-    // Create hover tooltips for each gauge
-    createGaugeTooltip(deltaGauge, 'Delta', 'Price sensitivity to underlying movement');
-    createGaugeTooltip(gammaGauge, 'Gamma', 'Rate of change of delta');
-    createGaugeTooltip(thetaGauge, 'Theta', 'Time decay (daily)');
-    createGaugeTooltip(vegaGauge, 'Vega', 'Sensitivity to volatility changes');
-    createGaugeTooltip(ivGauge, 'IV', 'Implied volatility');
-    
-    console.log(`✅ Created 5 Greek gauges (including IV) for ${type} $${strike} at position (${gaugeStartX.toFixed(2)}, ${gaugeY.toFixed(2)}, ${gaugeZ.toFixed(2)})`);
-    
-    // Add rocket label (positioned relative to rocket group)
+    // Add rocket label
     const label = createRocketLabel(type, strike, greeks.price.toFixed(2));
-    label.position.set(0, 3, 0); // Above rocket (relative to group origin)
+    label.position.set(x, y + 3, z);
     rocketGroup.add(label);
 
+    scene.add(rocketGroup);
     rockets.push({
         group: rocketGroup,
         params: params,
         greeks: greeks,
         trajectory: trajectory,
-        breakevenRing: breakevenRing,
-        launchPriceLine: launchPriceLine,
-        spotPrice: currentSpotPrice, // Per-rocket spot price (like optionaut-app)
-        launchPrice: launchPrice, // Fixed launch/strike price for reference line
-        premium: premium, // Premium paid (for P/L calculation)
-        profitLoss: profitLoss, // Current P/L
-        intrinsicValue: intrinsicValue,
-        isITM: isITM,
-        spotPricePlanet: spotPricePlanet, // Individual spot price planet
-        greekGauges: [deltaGauge, gammaGauge, thetaGauge, vegaGauge, ivGauge], // Greek gauges (including IV)
-        launchTime: Date.now() // Track when rocket was launched
+        breakevenRing: breakevenRing
     });
-    
-    // Store in rocket group userData for easy access
-    rocketGroup.userData.spotPrice = currentSpotPrice;
-    rocketGroup.userData.launchPrice = launchPrice;
-    rocketGroup.userData.rocketIndex = rockets.length - 1;
 
     currentRocket = rocketGroup;
     cameraFollowTarget = rocketGroup; // Set as camera follow target
@@ -821,7 +553,7 @@ function createRocket(params) {
         timeToExpiry,
         iv,
         entry,
-        position: { x: rocketX, y: rocketY, z: rocketZ }
+        position: { x, y, z }
     });
 
     rocketGroup.userData.rocketId = rocketId;
@@ -830,11 +562,11 @@ function createRocket(params) {
     rocketGroup.userData.velocity = new THREE.Vector3(0, 0, 0);
     rocketGroup.userData.acceleration = new THREE.Vector3(0, 0, 0);
 
-            // Thrust system based on Greeks - FURTHER REDUCED to prevent runaway
-            rocketGroup.userData.maxThrust = Math.abs(greeks.delta) * 1.5; // Max thrust based on delta (further reduced)
-            rocketGroup.userData.fuel = 1.0; // Start with full fuel (1.0 = 100%)
-            rocketGroup.userData.fuelBurnRate = Math.abs(greeks.theta) * 0.003; // Theta = fuel burn rate (further reduced)
-            rocketGroup.userData.maxSpeed = 5; // Maximum speed (further reduced to prevent runaway)
+    // Thrust system based on Greeks
+    rocketGroup.userData.maxThrust = Math.abs(greeks.delta) * 15; // Max thrust based on delta
+    rocketGroup.userData.fuel = 1.0; // Start with full fuel (1.0 = 100%)
+    rocketGroup.userData.fuelBurnRate = Math.abs(greeks.theta) * 0.01; // Theta = fuel burn rate
+    rocketGroup.userData.maxSpeed = 30; // Maximum speed
 
     // Calculate orbital velocity for stable orbit
     // v = sqrt(GM/r) where G*M is gravitational constant * planet mass
@@ -842,9 +574,10 @@ function createRocket(params) {
     const gravitationalParameter = 500; // Tuned for visual effect
     const orbitalSpeed = Math.sqrt(gravitationalParameter / distanceFromPlanet);
 
-            // Give rocket minimal initial orbital velocity to prevent runaway
-            // Start with zero velocity - let physics take over naturally
-            rocketGroup.userData.velocity.set(0, 0, 0); // Start stationary to prevent runaway
+    // Give rocket initial orbital velocity (perpendicular to radius)
+    const radiusVector = rocketGroup.position.clone().normalize();
+    const tangentVector = new THREE.Vector3(-radiusVector.z, 0, radiusVector.x).normalize();
+    rocketGroup.userData.velocity.copy(tangentVector.multiplyScalar(orbitalSpeed * 0.7)); // 70% of orbital velocity
 
     // Initialize lastDirection based on rocket's initial orientation (prevents spinning)
     const initialForward = new THREE.Vector3(1, 0, 0);
@@ -901,35 +634,6 @@ function createBreakevenRing(breakeven, spot, color) {
     return ring;
 }
 
-// Create launch price line (like optionaut-app) - horizontal line at strike price height
-function createLaunchPriceLine(strike, currentSpot, type) {
-    // Calculate height based on strike price distance from spot
-    const priceDistance = Math.abs(strike - currentSpot);
-    const height = priceDistance * 2; // Scale factor
-    
-    // Create a horizontal line/circle at the strike price level
-    const radius = Math.abs(strike - currentSpot) * 3; // Horizontal distance
-    const geometry = new THREE.RingGeometry(radius - 1, radius + 1, 64);
-    const lineColor = type === 'call' ? 0x00ffff : 0xff4444;
-    const material = new THREE.MeshBasicMaterial({
-        color: lineColor,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.4,
-        emissive: lineColor,
-        emissiveIntensity: 0.3
-    });
-    const lineRing = new THREE.Mesh(geometry, material);
-    lineRing.rotation.x = -Math.PI / 2; // Horizontal plane
-    lineRing.position.y = height; // At strike price height
-    
-    // Add label sprite
-    const label = createLabel(`Strike: $${strike}`, 0, height, 0);
-    lineRing.userData.label = label;
-    
-    return lineRing;
-}
-
 // Create text label
 function createLabel(text, x, y, z) {
     const canvas = document.createElement('canvas');
@@ -955,31 +659,6 @@ function createLabel(text, x, y, z) {
     sprite.position.set(x, y, z);
 
     return sprite;
-}
-
-// Create individual spot price planet for each rocket (like optionaut-app)
-function createSpotPricePlanet(spotPrice, rocketIndex) {
-    const planetRadius = 1.5; // 50% smaller - fits on rocket center
-    const planetGeometry = new THREE.SphereGeometry(planetRadius, 16, 16);
-    const planetMaterial = new THREE.MeshStandardMaterial({
-        color: 0x00ff00,
-        emissive: 0x004400,
-        emissiveIntensity: 0.6,
-        roughness: 0.6,
-        metalness: 0.4
-    });
-    const spotPlanet = new THREE.Mesh(planetGeometry, planetMaterial);
-    
-    // Position at origin initially (will be updated to rocket center)
-    spotPlanet.position.set(0, 0, 0);
-    spotPlanet.castShadow = true;
-    spotPlanet.receiveShadow = true;
-    
-    // Add label - position on planet surface (at planet radius, not above it)
-    const label = createLabel(`Spot: $${spotPrice.toFixed(2)}`, 0, planetRadius, 0);
-    spotPlanet.userData.label = label;
-    
-    return spotPlanet;
 }
 
 // Create rocket label
@@ -1013,160 +692,13 @@ function createRocketLabel(type, strike, price) {
     return sprite;
 }
 
-// Create hover tooltip for gauge
-function createGaugeTooltip(gaugeSprite, name, description) {
-    const tooltip = document.createElement('div');
-    tooltip.className = 'gauge-tooltip';
-    tooltip.style.cssText = `
-        position: fixed;
-        background: rgba(0, 0, 0, 0.9);
-        color: #ffffff;
-        padding: 8px 12px;
-        border-radius: 6px;
-        border: 1px solid rgba(100, 200, 255, 0.5);
-        font-family: Arial, sans-serif;
-        font-size: 12px;
-        pointer-events: none;
-        z-index: 10000;
-        display: none;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.8);
-        max-width: 200px;
-    `;
-    
-    tooltip.innerHTML = `
-        <div style="font-weight: bold; color: #64c8ff; margin-bottom: 4px;">${name}</div>
-        <div style="color: #aaaaaa; font-size: 11px;">${description}</div>
-    `;
-    
-    document.body.appendChild(tooltip);
-    gaugeTooltips.set(gaugeSprite, tooltip);
-    gaugeSprite.userData.tooltip = tooltip;
-    gaugeSprite.userData.tooltipName = name;
-}
-
-// Create Greek gauge display (2D sprite with gauge visualization)
-function createGreekGauge(name, symbol, value, color, position) {
-    const canvas = document.createElement('canvas');
-    canvas.width = 80;
-    canvas.height = 120;
-    const context = canvas.getContext('2d');
-
-    // Background
-    context.fillStyle = 'rgba(0, 0, 0, 0.8)';
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-    context.lineWidth = 2;
-    context.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
-
-    // Gauge fill (normalized value 0-1)
-    const normalizedValue = Math.min(Math.max(Math.abs(value), 0), 1);
-    const fillHeight = normalizedValue * (canvas.height - 20);
-    
-    // Gradient fill
-    const gradient = context.createLinearGradient(0, canvas.height - 20, 0, canvas.height - 20 - fillHeight);
-    gradient.addColorStop(0, color);
-    gradient.addColorStop(1, color.replace(')', ', 0.5)').replace('rgb', 'rgba'));
-    context.fillStyle = gradient;
-    context.fillRect(10, canvas.height - 10 - fillHeight, canvas.width - 20, fillHeight);
-
-    // Symbol
-    context.fillStyle = '#ffffff';
-    context.font = 'bold 24px Arial';
-    context.textAlign = 'center';
-    context.textBaseline = 'middle';
-    context.fillText(symbol, canvas.width / 2, 30);
-
-    // Value
-    context.font = 'bold 12px monospace';
-    context.fillText(value.toFixed(3), canvas.width / 2, canvas.height - 5);
-
-    // Name
-    context.font = '10px Arial';
-    context.fillStyle = '#aaaaaa';
-    context.fillText(name, canvas.width / 2, 50);
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.needsUpdate = true;
-
-    const spriteMaterial = new THREE.SpriteMaterial({
-        map: texture,
-        transparent: true
-    });
-    const sprite = new THREE.Sprite(spriteMaterial);
-    sprite.scale.set(3, 4.5, 1);
-    sprite.position.copy(position);
-    sprite.userData.canvas = canvas;
-    sprite.userData.name = name;
-    sprite.userData.symbol = symbol;
-    sprite.userData.color = color;
-    sprite.userData.lastValue = value;
-
-    return sprite;
-}
-
-// Update Greek gauge display
-function updateGreekGauge(sprite, name, symbol, value, color) {
-    const canvas = sprite.userData.canvas;
-    if (!canvas) return;
-    
-    const context = canvas.getContext('2d');
-    context.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Background
-    context.fillStyle = 'rgba(0, 0, 0, 0.8)';
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-    context.lineWidth = 2;
-    context.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
-
-    // Gauge fill (normalized value 0-1)
-    const normalizedValue = Math.min(Math.max(Math.abs(value), 0), 1);
-    const fillHeight = normalizedValue * (canvas.height - 20);
-    
-    // Gradient fill
-    const gradient = context.createLinearGradient(0, canvas.height - 20, 0, canvas.height - 20 - fillHeight);
-    gradient.addColorStop(0, color);
-    gradient.addColorStop(1, color.replace(')', ', 0.5)').replace('rgb', 'rgba'));
-    context.fillStyle = gradient;
-    context.fillRect(10, canvas.height - 10 - fillHeight, canvas.width - 20, fillHeight);
-
-    // Symbol
-    context.fillStyle = '#ffffff';
-    context.font = 'bold 24px Arial';
-    context.textAlign = 'center';
-    context.textBaseline = 'middle';
-    context.fillText(symbol, canvas.width / 2, 30);
-
-    // Value
-    context.font = 'bold 12px monospace';
-    context.fillText(value.toFixed(3), canvas.width / 2, canvas.height - 5);
-
-    // Name
-    context.font = '10px Arial';
-    context.fillStyle = '#aaaaaa';
-    context.fillText(name, canvas.width / 2, 50);
-
-    sprite.material.map.needsUpdate = true;
-    sprite.userData.lastValue = value;
-}
-
 // Create UI controls panel (compact version)
 function createControlsPanel() {
     controlsPanel = document.getElementById('controls');
-    if (!controlsPanel) {
-        console.warn('⚠️ Controls panel element not found!');
-        return;
-    }
+    if (!controlsPanel) return;
 
     controlsPanel.innerHTML = '';
-    
-    // Check if top bar exists (for manual version) and adjust positioning
-    const topBar = document.getElementById('top-bar');
-    const topOffset = topBar ? '70px' : '10px';
-    
-    controlsPanel.style.cssText = `position: fixed; top: ${topOffset}; right: 10px; z-index: 1000; background: rgba(0, 0, 0, 0.85); padding: 12px; border-radius: 8px; min-width: 200px; max-width: 250px; font-family: Arial, sans-serif; font-size: 11px; color: white; box-shadow: 0 4px 12px rgba(0,0,0,0.5); border: 1px solid rgba(74, 144, 226, 0.3);`;
-    
-    console.log('✅ Controls panel created at top:', topOffset);
+    controlsPanel.style.cssText = 'position: absolute; top: 10px; right: 10px; z-index: 1000; background: rgba(0, 0, 0, 0.85); padding: 12px; border-radius: 8px; min-width: 200px; max-width: 250px; font-family: Arial, sans-serif; font-size: 11px; color: white; box-shadow: 0 4px 12px rgba(0,0,0,0.5);';
 
     const container = document.createElement('div');
 
@@ -1203,41 +735,18 @@ function createControlsPanel() {
     launchBtn.style.cssText = 'width: 100%; padding: 8px; margin-top: 12px; background: linear-gradient(135deg, #4caf50, #45a049); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px; transition: transform 0.1s;';
     launchBtn.onmouseover = () => launchBtn.style.transform = 'scale(1.05)';
     launchBtn.onmouseout = () => launchBtn.style.transform = 'scale(1)';
-    launchBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        
-        try {
-            // Get input values
-            const typeEl = document.getElementById('option-type');
-            const strikeEl = document.getElementById('strike-input');
-            const spotEl = document.getElementById('spot-input');
-            const ivEl = document.getElementById('iv-input');
-            const dteEl = document.getElementById('dte-input');
-            
-            // Validate elements exist
-            if (!typeEl || !strikeEl || !spotEl || !ivEl || !dteEl) {
-                console.error('❌ Control inputs not found!', { typeEl, strikeEl, spotEl, ivEl, dteEl });
-                alert('Error: Control inputs not found. Please refresh the page.');
-                return;
-            }
-            
-            const type = typeEl.value || 'call';
-            const strike = parseFloat(strikeEl.value) || 100;
-            const spot = parseFloat(spotEl.value) || 100;
-            const iv = parseFloat(ivEl.value) || 0.16;
-            const dte = parseFloat(dteEl.value) || 1;
+    launchBtn.addEventListener('click', () => {
+        const type = document.getElementById('option-type').value;
+        const strike = parseFloat(document.getElementById('strike-input').value);
+        const spot = parseFloat(document.getElementById('spot-input').value);
+        const iv = parseFloat(document.getElementById('iv-input').value);
+        const dte = parseFloat(document.getElementById('dte-input').value);
         const timeToExpiry = dte / 365;
 
-            // Validate inputs
-            if (isNaN(strike) || isNaN(spot) || isNaN(iv) || isNaN(dte)) {
-                console.error('❌ Invalid input values', { strike, spot, iv, dte });
-                alert('Please enter valid numbers for all fields.');
-                return;
-            }
-
         // KEEP existing rockets - support multi-leg strategies!
+        // Don't remove old rockets, just add new ones
         console.log(`🚀 Keeping ${rockets.length} existing rocket(s), launching new one`);
+
         console.log(`🚀 Launching new rocket: ${type}, Strike=${strike}, Spot=${spot}, IV=${iv}, DTE=${dte}`);
 
         const newRocket = createRocket({
@@ -1251,7 +760,6 @@ function createControlsPanel() {
 
         if (!newRocket) {
             console.error('❌ Failed to create rocket!');
-                alert('Failed to create rocket. Check console for details.');
             return;
         }
 
@@ -1284,15 +792,6 @@ function createControlsPanel() {
         camera.lookAt(controls.target);
 
         console.log(`📷 Camera repositioned to follow new rocket at: (${targetPos.x.toFixed(2)}, ${targetPos.y.toFixed(2)}, ${targetPos.z.toFixed(2)})`);
-            
-            // Update rockets list UI to show new rocket's spot price slider
-            if (window.updateRocketsListUI) {
-                window.updateRocketsListUI();
-            }
-        } catch (error) {
-            console.error('❌ Error launching rocket:', error);
-            alert(`Error launching rocket: ${error.message}`);
-        }
     });
     container.appendChild(launchBtn);
 
@@ -1301,7 +800,7 @@ function createControlsPanel() {
     followLabel.style.cssText = 'display: flex; align-items: center; margin-top: 10px; font-size: 10px; cursor: pointer;';
     const followCheckbox = document.createElement('input');
     followCheckbox.type = 'checkbox';
-    followCheckbox.checked = false;
+    followCheckbox.checked = true;
     followCheckbox.style.cssText = 'margin-right: 6px;';
     followCheckbox.addEventListener('change', (e) => {
         cameraFollowEnabled = e.target.checked;
@@ -1320,137 +819,8 @@ function createControlsPanel() {
     helpDiv.style.cssText = 'margin-top: 10px; padding: 6px; background: rgba(0,0,0,0.3); border-radius: 3px; font-size: 9px; color: #aaa;';
     helpDiv.innerHTML = 'WASD: Move<br>Mouse: Look<br>Q/E: Up/Down';
     container.appendChild(helpDiv);
-    
-    // Rockets list container (for per-rocket spot price sliders)
-    const rocketsListContainer = document.createElement('div');
-    rocketsListContainer.id = 'rockets-list';
-    rocketsListContainer.style.cssText = 'margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(74, 144, 226, 0.3); max-height: 400px; overflow-y: auto;';
-    container.appendChild(rocketsListContainer);
-    
-    // Function to update rockets list UI
-    window.updateRocketsListUI = function() {
-        updateRocketsListUI();
-    };
-    
-    function updateRocketsListUI() {
-        if (!rocketsListContainer) return;
-        rocketsListContainer.innerHTML = '';
-        
-        if (rockets.length === 0) {
-            const emptyMsg = document.createElement('div');
-            emptyMsg.textContent = 'No rockets launched yet';
-            emptyMsg.style.cssText = 'text-align: center; color: #666; font-size: 10px; padding: 10px;';
-            rocketsListContainer.appendChild(emptyMsg);
-            return;
-        }
-        
-        rockets.forEach((rocket, index) => {
-            const rocketCard = createRocketSpotSlider(rocket, index);
-            rocketsListContainer.appendChild(rocketCard);
-        });
-    }
 
     controlsPanel.appendChild(container);
-    
-    // Update rockets list periodically
-    setInterval(updateRocketsListUI, 1000);
-    updateRocketsListUI(); // Initial update
-}
-
-// Create spot price slider for individual rocket
-function createRocketSpotSlider(rocket, index) {
-    const card = document.createElement('div');
-    card.style.cssText = 'margin-bottom: 10px; padding: 8px; background: rgba(74, 144, 226, 0.1); border-radius: 4px; border: 1px solid rgba(74, 144, 226, 0.3);';
-    
-    const params = rocket.params || {};
-    const strike = params.strike || 100;
-    const type = params.type || 'call';
-    const currentSpot = rocket.spotPrice !== undefined ? rocket.spotPrice : (params.spot || 100);
-    
-    // Title
-    const title = document.createElement('div');
-    title.textContent = `${type.toUpperCase()} $${strike}`;
-    title.style.cssText = 'font-size: 11px; font-weight: bold; color: #4a90e2; margin-bottom: 6px;';
-    card.appendChild(title);
-    
-    // Spot price slider
-    const sliderContainer = document.createElement('div');
-    sliderContainer.style.cssText = 'display: flex; align-items: center; gap: 8px;';
-    
-    const sliderLabel = document.createElement('label');
-    sliderLabel.textContent = 'Spot:';
-    sliderLabel.style.cssText = 'font-size: 10px; color: #aaa; min-width: 35px;';
-    sliderContainer.appendChild(sliderLabel);
-    
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    // Reduced range to prevent rockets from going too far: ±30 instead of ±50
-    slider.min = Math.max(0, strike - 30);
-    slider.max = strike + 30;
-    slider.step = 0.5;
-    slider.value = currentSpot;
-    slider.style.cssText = 'flex: 1; height: 4px;';
-    slider.addEventListener('input', (e) => {
-        const newSpot = parseFloat(e.target.value);
-        updateRocketSpotPrice(index, newSpot);
-        spotDisplay.textContent = `$${newSpot.toFixed(2)}`;
-    });
-    sliderContainer.appendChild(slider);
-    
-    const spotDisplay = document.createElement('span');
-    spotDisplay.textContent = `$${currentSpot.toFixed(2)}`;
-    spotDisplay.style.cssText = 'font-size: 10px; color: #00ff00; font-weight: bold; min-width: 60px; text-align: right; font-family: monospace;';
-    sliderContainer.appendChild(spotDisplay);
-    
-    card.appendChild(sliderContainer);
-    
-    // P/L display
-    const plDisplay = document.createElement('div');
-    plDisplay.style.cssText = 'margin-top: 6px; font-size: 11px; font-family: monospace;';
-    const updatePLDisplay = () => {
-        const currentSpot = rocket.spotPrice !== undefined ? rocket.spotPrice : (params.spot || 100);
-        const premium = rocket.premium !== undefined ? rocket.premium : (params.entry || 0.5);
-        const greeks = rocket.greeks || calculateGreeks(currentSpot, strike, params.timeToExpiry || 0.0027, params.iv || 0.16, 0.02, type);
-        const profitLoss = calculateProfitLoss(greeks.price, premium, 1);
-        const isITM = isInTheMoney(currentSpot, strike, type);
-        plDisplay.innerHTML = `P/L: <span style="color: ${profitLoss >= 0 ? '#00ff00' : '#ff4444'}; font-weight: bold;">${profitLoss >= 0 ? '+' : ''}$${profitLoss.toFixed(2)}</span> <span style="color: ${isITM ? '#00ff00' : '#888'}; font-size: 10px;">(${isITM ? 'ITM' : 'OTM'})</span>`;
-    };
-    updatePLDisplay();
-    card.appendChild(plDisplay);
-    
-    // Update P/L when slider changes
-    slider.addEventListener('input', () => {
-        setTimeout(updatePLDisplay, 50); // Small delay to let animation loop update Greeks
-    });
-    
-    return card;
-}
-
-// Update rocket spot price and recalculate position/Greeks
-function updateRocketSpotPrice(rocketIndex, newSpotPrice) {
-    if (rocketIndex < 0 || rocketIndex >= rockets.length) return;
-    
-    const rocket = rockets[rocketIndex];
-    rocket.spotPrice = newSpotPrice;
-    
-    // Update stored spot price in rocket group
-    if (rocket.group) {
-        rocket.group.userData.spotPrice = newSpotPrice;
-    }
-    
-    // Recalculate Greeks with new spot price
-    const params = rocket.params;
-    const newGreeks = calculateGreeks(
-        newSpotPrice,
-        params.strike,
-        params.timeToExpiry,
-        params.iv,
-        0.02,
-        params.type
-    );
-    rocket.greeks = newGreeks;
-    
-    console.log(`📊 Updated rocket #${rocketIndex} spot price to $${newSpotPrice.toFixed(2)}`);
 }
 
 function addGridRow(grid, labelText, inputType, inputId, defaultValue, step = null) {
@@ -1498,14 +868,6 @@ function setupNavigationControls() {
             case 'e': case 'shift': moveState.down = false; break;
         }
     });
-    
-    // Handle 'i' key for info panel (separate handler to avoid conflicts)
-    window.addEventListener('keydown', (e) => {
-        if (e.key.toLowerCase() === 'i' && !e.target.matches('input, textarea, select')) {
-            e.preventDefault();
-            toggleInfoPanel();
-        }
-    });
 
     // Mouse controls
     renderer.domElement.addEventListener('mousedown', (e) => {
@@ -1521,10 +883,6 @@ function setupNavigationControls() {
     });
 
     renderer.domElement.addEventListener('mousemove', (e) => {
-        // Always update mouse position for gauge hover detection
-        mouseState.lastX = e.clientX;
-        mouseState.lastY = e.clientY;
-        
         if (mouseState.isDown && !cameraFollowEnabled) {
             const dx = e.clientX - mouseState.lastX;
             const dy = e.clientY - mouseState.lastY;
@@ -1539,6 +897,9 @@ function setupNavigationControls() {
             const newPosition = new THREE.Vector3().setFromSpherical(spherical).add(controls.target);
             camera.position.copy(newPosition);
             camera.lookAt(controls.target);
+
+            mouseState.lastX = e.clientX;
+            mouseState.lastY = e.clientY;
         }
     });
 
@@ -1610,10 +971,10 @@ function updateCameraFollow() {
     }
 
     // Dynamic camera: zoom out to keep rockets in frame
-    // Calculate bounding box of all rockets AND the planet
-    let minX = 0, maxX = 0; // Include planet at origin
-    let minY = 0, maxY = 0;
-    let minZ = 0, maxZ = 0;
+    // Calculate bounding box of all rockets
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    let minZ = Infinity, maxZ = -Infinity;
 
     activeRockets.forEach(rocket => {
         const pos = rocket.group.position;
@@ -1625,7 +986,7 @@ function updateCameraFollow() {
         maxZ = Math.max(maxZ, pos.z);
     });
 
-    // Calculate center of all rockets and planet
+    // Calculate center of all rockets
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
     const centerZ = (minZ + maxZ) / 2;
@@ -1638,26 +999,25 @@ function updateCameraFollow() {
     const maxSize = Math.max(sizeX, sizeY, sizeZ, 20); // Minimum 20 units
 
     // Dynamic follow distance based on rocket spread
-    // Ensure we can see everything (FOV 75 degrees)
-    // Distance needed = (size / 2) / tan(FOV / 2)
-    // tan(37.5) approx 0.76
-    const requiredDistance = (maxSize / 2) / 0.6; // Add some margin
-    const followDistance = Math.max(40, requiredDistance);
-    const followHeight = Math.max(20, maxSize * 0.4);
+    const followDistance = Math.max(15, maxSize * 1.5); // Zoom out to keep all in frame
+    const followHeight = Math.max(10, maxSize * 0.8); // Height based on spread
 
-    // Position camera to see the spread
-    // We want to be perpendicular to the main axis of distribution if possible, 
-    // or just at a 45 degree angle which usually works well for 3D
-    const angle = Math.PI / 4;
+    // Position camera BEHIND the center (away from origin)
+    const idealPosition = center.clone()
+        .add(toRocket.multiplyScalar(followDistance))
+        .add(new THREE.Vector3(0, followHeight, 0));
 
-    const idealPosition = new THREE.Vector3(
-        center.x + Math.cos(angle) * followDistance,
-        center.y + followHeight,
-        center.z + Math.sin(angle) * followDistance
-    );
+    // Ensure minimum height
+    idealPosition.y = Math.max(idealPosition.y, centerY + 5);
 
-    // Ensure minimum height above planet
-    idealPosition.y = Math.max(idealPosition.y, 30);
+    // Ensure camera is further from origin than rockets (so planet doesn't block)
+    const centerDistance = center.length();
+    const cameraDistance = idealPosition.length();
+    if (cameraDistance <= centerDistance + 5) {
+        const direction = idealPosition.clone().normalize();
+        idealPosition.copy(direction.multiplyScalar(centerDistance + followDistance + 5));
+        idealPosition.y = Math.max(centerY + followHeight, 10);
+    }
 
     // Smooth camera movement
     camera.position.lerp(idealPosition, 0.2);
@@ -1703,286 +1063,85 @@ function animate() {
         underlyingPlanet.material.emissiveIntensity = pulse;
     }
 
-    // Animate spot price planets rotation
-    rockets.forEach((rocket) => {
-        if (rocket.spotPricePlanet) {
-            rocket.spotPricePlanet.rotation.y += 0.002;
-            const pulse = Math.sin(elapsedTime + rocket.spotPricePlanet.position.x * 0.1) * 0.1 + 0.4;
-            rocket.spotPricePlanet.material.emissiveIntensity = pulse;
-        }
-    });
-
-    // Update rockets based on spot price (anchored positioning like optionaut-app)
+    // Animate rockets with orbital physics
     rockets.forEach((rocket, index) => {
         if (rocket.group) {
-            // Get current spot price for this rocket
-            const currentSpot = rocket.spotPrice !== undefined ? rocket.spotPrice : rocket.params.spot;
-            const strike = rocket.params.strike;
-            const premium = rocket.premium !== undefined ? rocket.premium : (rocket.params.entry || rocket.params.spot);
-            
-            // Recalculate Greeks with current spot price
-            const newGreeks = calculateGreeks(
-                currentSpot,
-                strike,
-                rocket.params.timeToExpiry,
-                rocket.params.iv,
-                0.02,
-                rocket.params.type
-            );
-            rocket.greeks = newGreeks;
-            
-            // Update P/L calculation
-            const newProfitLoss = calculateProfitLoss(newGreeks.price, premium, 1);
-            const newIntrinsicValue = calculateIntrinsicValue(currentSpot, strike, rocket.params.type);
-            const newIsITM = isInTheMoney(currentSpot, strike, rocket.params.type);
-            rocket.profitLoss = newProfitLoss;
-            rocket.intrinsicValue = newIntrinsicValue;
-            rocket.isITM = newIsITM;
-            
-            // Position rocket relative to its spot price planet (not origin)
-            // Use improved scaling with sigmoid-like function for smoother OTM/ATM behavior
-            const strikeDiff = Math.abs(strike - currentSpot);
-            const strikePercent = strikeDiff / currentSpot; // Percentage difference
-            
-            // Sigmoid-like scaling: closer to ATM = closer to planet, far OTM = further but bounded
-            // Use logarithmic scaling for better distribution
-            const baseDistance = Math.log(1 + strikePercent * 10) * 2; // Logarithmic scaling
-            const minDistance = 3; // Much closer minimum distance
-            const maxDistance = 20; // Reduced max distance
-            const actualDistance = Math.max(minDistance, Math.min(maxDistance, baseDistance));
-            const angle = rocket.group.userData.angle || (index * 60) * (Math.PI / 180);
-            
-            // Determine direction: ITM moves away from planet, OTM moves toward planet
-            // For calls: ITM = spot > strike (away), OTM = spot < strike (toward)
-            // For puts: ITM = spot < strike (away), OTM = spot > strike (toward)
-            const isITM = (rocket.params.type === 'call' && currentSpot > strike) || (rocket.params.type === 'put' && currentSpot < strike);
-            const directionMultiplier = isITM ? 1 : -1; // ITM: away (+1), OTM: toward (-1)
-            
-            // Calculate rocket position based on spot price location
-            const spotX = (currentSpot - 680) * 0.3; // Scale spot price to X position (centered around 680)
-            const spotZ = Math.sin(angle) * 20; // Space rockets around
-            
-            // Rocket position relative to spot price location
-            const targetX = spotX + Math.cos(angle) * actualDistance * directionMultiplier;
-            const targetZ = spotZ + Math.sin(angle) * actualDistance * directionMultiplier;
-            // Height = option price (scaled appropriately)
-            const targetY = Math.max(15, newGreeks.price * 20);
-            
-            const targetPosition = new THREE.Vector3(targetX, targetY, targetZ);
-            
-            // Update spot price planet position - position at rocket center
-            if (rocket.spotPricePlanet) {
-                // Position planet at rocket center
-                rocket.spotPricePlanet.position.lerp(targetPosition, 15.0 * delta); // Fast follow
-                
-                // Update planet label - position on planet surface (above rocket)
-                if (rocket.spotPricePlanet.userData.label) {
-                    const labelPlanetRadius = 1.5; // Match the smaller planet size
-                    rocket.spotPricePlanet.userData.label.position.lerp(
-                        new THREE.Vector3(targetX, targetY + labelPlanetRadius, targetZ),
-                        10.0 * delta
-                    );
-                    
-                    // Update label text
-                    const labelSprite = rocket.spotPricePlanet.userData.label;
-                    if (labelSprite.material && labelSprite.material.map) {
-                        const canvas = labelSprite.material.map.image;
-                        if (canvas) {
-                            const context = canvas.getContext('2d');
-                            context.clearRect(0, 0, canvas.width, canvas.height);
-                            context.fillStyle = 'rgba(0, 0, 0, 0.7)';
-                            context.fillRect(0, 0, canvas.width, canvas.height);
-                            context.fillStyle = '#00ff00';
-                            context.font = 'bold 16px Arial';
-                            context.textAlign = 'center';
-                            context.textBaseline = 'middle';
-                            context.fillText(`Spot: $${currentSpot.toFixed(2)}`, canvas.width / 2, canvas.height / 2);
-                            labelSprite.material.map.needsUpdate = true;
-                        }
-                    }
-                }
-                
-                // Store spot planet position for rocket positioning (same as rocket position now)
-                rocket.group.userData.spotPlanetPosition = targetPosition.clone();
-            }
-            
-            // Check for extreme ITM (warp speed condition) - delta > 0.9
-            const extremeITM = Math.abs(newGreeks.delta) > 0.9;
-            rocket.group.userData.isWarpSpeed = extremeITM;
-            
-            // Smoothly move rocket to target position
-            const moveSpeed = extremeITM ? 20.0 : 10.0; // Faster movement when in warp speed
-            rocket.group.position.lerp(targetPosition, moveSpeed * delta);
-            
-            // Update spot planet position to follow rocket
-            rocket.group.userData.spotPlanetPosition = targetPosition.clone();
-            
-            // Update orientation based on delta (tilt)
-            const deltaAngle = (newGreeks.delta - 0.5) * Math.PI * 0.2;
-            const targetRotation = rocket.params.type === 'put' ? Math.PI : 0;
-            rocket.group.rotation.y = THREE.MathUtils.lerp(rocket.group.rotation.y, targetRotation, 5 * delta);
-            rocket.group.rotation.z = THREE.MathUtils.lerp(rocket.group.rotation.z, deltaAngle, 5 * delta);
-            
-            // Store updated target position
-            rocket.group.userData.targetPosition = targetPosition;
-            
-            // Update Greek gauges - position ABOVE rocket in horizontal row
-            if (rocket.greekGauges && rocket.greekGauges.length >= 5) {
-                const [deltaGauge, gammaGauge, thetaGauge, vegaGauge, ivGauge] = rocket.greekGauges;
-                // Ensure gauges are well above planet surface (planet radius is 12, so use Y > 20)
-                const gaugeHeight = Math.max(targetY + 8, 25); // Well above rocket, minimum 25 to clear planet
-                const gaugeSpacing = 5; // Horizontal spacing between gauges
-                const gaugeStartX = targetX - (gaugeSpacing * 2); // Center the row around rocket (adjusted for 5 gauges)
-                
-                // Position gauges in a horizontal row above the rocket
-                const gaugeY = gaugeHeight;
-                const gaugeZ = targetZ;
-                
-                // Update gauge positions (horizontal row - 5 gauges now)
-                deltaGauge.position.lerp(new THREE.Vector3(gaugeStartX, gaugeY, gaugeZ), 10.0 * delta);
-                gammaGauge.position.lerp(new THREE.Vector3(gaugeStartX + gaugeSpacing, gaugeY, gaugeZ), 10.0 * delta);
-                thetaGauge.position.lerp(new THREE.Vector3(gaugeStartX + gaugeSpacing * 2, gaugeY, gaugeZ), 10.0 * delta);
-                vegaGauge.position.lerp(new THREE.Vector3(gaugeStartX + gaugeSpacing * 3, gaugeY, gaugeZ), 10.0 * delta);
-                ivGauge.position.lerp(new THREE.Vector3(gaugeStartX + gaugeSpacing * 4, gaugeY, gaugeZ), 10.0 * delta);
-                
-                // Update gauge values (recreate sprites if values changed significantly)
-                // For performance, we'll update periodically or on significant change
-                if (Math.abs(newGreeks.delta - (deltaGauge.userData.lastValue || 0)) > 0.01) {
-                    updateGreekGauge(deltaGauge, 'Delta', 'Δ', newGreeks.delta, newGreeks.delta > 0 ? 'rgb(16, 185, 129)' : 'rgb(239, 68, 68)');
-                    deltaGauge.userData.lastValue = newGreeks.delta;
-                }
-                if (Math.abs(newGreeks.gamma - (gammaGauge.userData.lastValue || 0)) > 0.001) {
-                    updateGreekGauge(gammaGauge, 'Gamma', 'Γ', newGreeks.gamma, 'rgb(168, 85, 247)');
-                    gammaGauge.userData.lastValue = newGreeks.gamma;
-                }
-                if (Math.abs(Math.abs(newGreeks.theta) - (thetaGauge.userData.lastValue || 0)) > 0.01) {
-                    updateGreekGauge(thetaGauge, 'Theta', 'Θ', Math.abs(newGreeks.theta), 'rgb(245, 158, 11)');
-                    thetaGauge.userData.lastValue = Math.abs(newGreeks.theta);
-                }
-                if (Math.abs(newGreeks.vega - (vegaGauge.userData.lastValue || 0)) > 0.01) {
-                    updateGreekGauge(vegaGauge, 'Vega', 'ν', newGreeks.vega, 'rgb(59, 130, 246)');
-                    vegaGauge.userData.lastValue = newGreeks.vega;
-                }
-                // Update IV gauge (IV comes from params, not Greeks)
-                const currentIV = rocket.params.iv || 0.16;
-                if (Math.abs(currentIV - (ivGauge.userData.lastValue || 0)) > 0.001) {
-                    updateGreekGauge(ivGauge, 'IV', 'σ', currentIV, 'rgb(255, 100, 150)');
-                    ivGauge.userData.lastValue = currentIV;
-                }
+            const rocketData = rocket.group.userData;
+
+            // Reset acceleration
+            rocketData.acceleration.set(0, 0, 0);
+
+            // 1. GRAVITATIONAL ATTRACTION (inverse square law)
+            const planetPosition = new THREE.Vector3(0, 0, 0);
+            const toPlanet = planetPosition.clone().sub(rocket.group.position);
+            const distanceToPlanet = toPlanet.length();
+
+            if (distanceToPlanet > 0.1) {
+                // F = GM/r^2, normalized direction
+                const gravitationalParameter = 500; // Tuned constant
+                const gravityMagnitude = gravitationalParameter / (distanceToPlanet * distanceToPlanet);
+                const gravityForce = toPlanet.normalize().multiplyScalar(gravityMagnitude);
+                rocketData.acceleration.add(gravityForce);
             }
 
-            // Animate exhaust cone based on delta/thrust
-            const exhaustCone = rocket.group.userData.exhaustCone;
-            if (exhaustCone && exhaustCone.material) {
-                // Calculate thrust intensity based on delta (0-1 range)
-                const deltaMagnitude = Math.abs(newGreeks.delta);
-                const thrustIntensity = Math.min(deltaMagnitude * 1.5, 1.0); // Scale delta to 0-1
-                
-                // Pulsing effect: combine base intensity with time-based pulse
-                const pulseSpeed = 8.0; // How fast it pulses
-                const pulseAmount = 0.15; // How much it pulses (15%)
-                const pulse = Math.sin(elapsedTime * pulseSpeed) * pulseAmount + 1.0;
-                
-                // Dynamic exhaust length based on thrust
-                const baseLength = exhaustCone.userData.baseLength || 5.0;
-                const lengthMultiplier = 0.7 + (thrustIntensity * 0.5); // 0.7x to 1.2x
-                const currentLength = baseLength * lengthMultiplier * pulse;
-                
-                // Dynamic exhaust radius based on thrust
-                const baseTipRadius = exhaustCone.userData.baseTipRadius || 1.0;
-                const radiusMultiplier = 0.8 + (thrustIntensity * 0.4); // 0.8x to 1.2x
-                const currentRadius = baseTipRadius * radiusMultiplier * pulse;
-                
-                // Update exhaust geometry (recreate if size changed significantly)
-                if (!exhaustCone.userData.lastLength || Math.abs(exhaustCone.userData.lastLength - currentLength) > 0.1) {
-                    const newGeometry = new THREE.ConeGeometry(currentRadius, currentLength, 12);
-                    exhaustCone.geometry.dispose();
-                    exhaustCone.geometry = newGeometry;
-                    exhaustCone.position.x = -currentLength / 2; // Reposition to keep tip at rocket base
-                    exhaustCone.userData.lastLength = currentLength;
-                }
-                
-                // Animate emissive intensity and opacity based on thrust
-                const baseEmissive = 0.9;
-                const baseOpacity = 0.75;
-                const intensityVariation = thrustIntensity * 0.3; // Up to 30% variation
-                exhaustCone.material.emissiveIntensity = baseEmissive + (intensityVariation * pulse);
-                exhaustCone.material.opacity = baseOpacity + (thrustIntensity * 0.2 * pulse);
-                
-                // Add slight flicker for realism
-                const flicker = (Math.random() - 0.5) * 0.05; // Small random variation
-                exhaustCone.material.emissiveIntensity = Math.max(0.5, exhaustCone.material.emissiveIntensity + flicker);
-                
-                // Warp speed effect for extreme ITM (delta > 0.9)
-                if (rocket.group.userData.isWarpSpeed) {
-                    // Intensify exhaust for warp speed
-                    exhaustCone.material.emissiveIntensity = Math.min(2.0, exhaustCone.material.emissiveIntensity * 1.5);
-                    exhaustCone.material.opacity = Math.min(1.0, exhaustCone.material.opacity * 1.2);
-                    
-                    // Add pulsing glow effect
-                    const warpPulse = Math.sin(elapsedTime * 15) * 0.3 + 1.0;
-                    exhaustCone.material.emissiveIntensity *= warpPulse;
-                    
-                    // Make exhaust longer and wider for warp effect
-                    const warpLengthMultiplier = 1.5;
-                    const warpRadiusMultiplier = 1.3;
-                    if (!exhaustCone.userData.warpGeometry) {
-                        const warpGeometry = new THREE.ConeGeometry(
-                            currentRadius * warpRadiusMultiplier,
-                            currentLength * warpLengthMultiplier,
-                            12
-                        );
-                        exhaustCone.geometry.dispose();
-                        exhaustCone.geometry = warpGeometry;
-                        exhaustCone.position.x = -(currentLength * warpLengthMultiplier) / 2;
-                        exhaustCone.userData.warpGeometry = true;
-                    }
-                } else {
-                    // Reset to normal geometry when not in warp
-                    if (exhaustCone.userData.warpGeometry) {
-                        const normalGeometry = new THREE.ConeGeometry(currentRadius, currentLength, 12);
-                        exhaustCone.geometry.dispose();
-                        exhaustCone.geometry = normalGeometry;
-                        exhaustCone.position.x = -currentLength / 2;
-                        exhaustCone.userData.warpGeometry = false;
-                    }
-                }
+            // 2. THRUST (based on Delta and remaining fuel)
+            if (rocketData.fuel > 0) {
+                // Calculate forward direction based on rocket's orientation
+                const forward = new THREE.Vector3(1, 0, 0);
+                forward.applyQuaternion(rocket.group.quaternion);
+
+                // Apply thrust proportional to fuel remaining
+                const currentThrust = rocketData.maxThrust * rocketData.fuel;
+                const thrustForce = forward.multiplyScalar(currentThrust * delta);
+                rocketData.acceleration.add(thrustForce);
+
+                // Burn fuel (Theta = decay rate)
+                rocketData.fuel -= rocketData.fuelBurnRate * delta;
+                rocketData.fuel = Math.max(0, rocketData.fuel); // Clamp to 0
             }
-            
-            // Add warp speed visual effects (particle trails, speed lines)
-            if (rocket.group.userData.isWarpSpeed) {
-                // Add glowing trail effect
-                if (!rocket.group.userData.warpTrail) {
-                    const trailGeometry = new THREE.ConeGeometry(0.5, 8, 8);
-                    const trailMaterial = new THREE.MeshBasicMaterial({
-                        color: 0x00ffff,
-                        transparent: true,
-                        opacity: 0.6,
-                        emissive: 0x00ffff,
-                        emissiveIntensity: 1.0
-                    });
-                    const warpTrail = new THREE.Mesh(trailGeometry, trailMaterial);
-                    warpTrail.rotation.z = Math.PI / 2;
-                    warpTrail.position.set(-4, 0, 0); // Behind rocket
-                    rocket.group.add(warpTrail);
-                    rocket.group.userData.warpTrail = warpTrail;
-                }
-                
-                // Animate warp trail
-                if (rocket.group.userData.warpTrail) {
-                    const trail = rocket.group.userData.warpTrail;
-                    trail.material.opacity = 0.4 + Math.sin(elapsedTime * 20) * 0.3;
-                    trail.material.emissiveIntensity = 1.0 + Math.sin(elapsedTime * 20) * 0.5;
-                    trail.scale.y = 1.0 + Math.sin(elapsedTime * 15) * 0.3;
-                }
-            } else {
-                // Remove warp trail when not in warp speed
-                if (rocket.group.userData.warpTrail) {
-                    rocket.group.remove(rocket.group.userData.warpTrail);
-                    rocket.group.userData.warpTrail.geometry.dispose();
-                    rocket.group.userData.warpTrail.material.dispose();
-                    rocket.group.userData.warpTrail = null;
-                }
+
+            // 3. ATMOSPHERIC DRAG (based on Vega - IV turbulence)
+            const dragCoefficient = 0.1;
+            const dragForce = rocketData.velocity.clone().multiplyScalar(-dragCoefficient * delta);
+            rocketData.acceleration.add(dragForce);
+
+            // 4. Apply acceleration to velocity
+            rocketData.velocity.add(rocketData.acceleration.clone().multiplyScalar(delta));
+
+            // Limit maximum speed
+            if (rocketData.velocity.length() > rocketData.maxSpeed) {
+                rocketData.velocity.normalize().multiplyScalar(rocketData.maxSpeed);
+            }
+
+            // 5. Apply velocity to position
+            const newPosition = rocket.group.position.clone().add(
+                rocketData.velocity.clone().multiplyScalar(delta)
+            );
+
+            // Prevent crashing into planet (minimum safe distance)
+            const planetRadius = 12;
+            const minSafeDistance = planetRadius + 2;
+            if (newPosition.length() < minSafeDistance) {
+                // Bounce off planet surface
+                const normal = newPosition.clone().normalize();
+                newPosition.copy(normal.multiplyScalar(minSafeDistance));
+                // Reflect velocity
+                const velocityAlongNormal = rocketData.velocity.clone().projectOnVector(normal);
+                rocketData.velocity.sub(velocityAlongNormal.multiplyScalar(1.5)); // Bounce with damping
+            }
+
+            // Update rocket position
+            rocket.group.position.copy(newPosition);
+
+            // KEEP ROCKET ORIENTATION FIXED - NO SPINNING
+            // Orientation is set at creation and never changes
+
+            // Debug: log rocket movement occasionally
+            if (Math.random() < 0.01 && index === 0) { // Log ~1% of frames for first rocket
+                const speed = rocketData.velocity.length();
+                const distFromPlanet = rocket.group.position.length();
+                console.log(`🚀 Rocket #${index}: Pos=(${newPosition.x.toFixed(1)}, ${newPosition.y.toFixed(1)}, ${newPosition.z.toFixed(1)})`);
+                console.log(`🚀 Speed: ${speed.toFixed(2)}, Fuel: ${(rocketData.fuel * 100).toFixed(1)}%, Dist from planet: ${distFromPlanet.toFixed(1)}`);
             }
 
             // Update exhaust particles
@@ -1991,30 +1150,23 @@ function animate() {
                 const positions = particles.geometry.attributes.position.array;
                 const velocities = particles.userData.velocities;
                 const lifetimes = particles.userData.lifetimes;
-                const rocketData = rocket.group.userData;
 
                 for (let i = 0; i < positions.length / 3; i++) {
                     const i3 = i * 3;
                     lifetimes[i] -= delta * 2;
 
                     if (lifetimes[i] <= 0) {
-                        // Reset particle at exhaust base
-                        const exhaustStartX = rocketData.exhaustStartX !== undefined ? rocketData.exhaustStartX : 0;
-                        const exhaustBaseRadius = rocketData.exhaustBaseRadius !== undefined ? rocketData.exhaustBaseRadius : 1.0;
+                        // Reset particle
+                        const exhaustStartX = -1.75 * 1.5; // Match rocketScale
                         positions[i3] = exhaustStartX;
-                        // Random position within exhaust base radius
-                        const radius = Math.random() * exhaustBaseRadius;
-                        const angle = Math.random() * Math.PI * 2;
-                        positions[i3 + 1] = Math.cos(angle) * radius;
-                        positions[i3 + 2] = Math.sin(angle) * radius;
+                        positions[i3 + 1] = (Math.random() - 0.5) * 0.8 * 1.5;
+                        positions[i3 + 2] = (Math.random() - 0.5) * 0.8 * 1.5;
                         lifetimes[i] = 1.0;
                     } else {
-                        // Update particle position - velocity based on thrust
-                        const deltaMagnitude = Math.abs(newGreeks.delta);
-                        const thrustMultiplier = 0.5 + (deltaMagnitude * 1.5); // Scale particle speed with thrust
-                        positions[i3] += velocities[i3] * delta * 3 * thrustMultiplier;
-                        positions[i3 + 1] += velocities[i3 + 1] * delta * thrustMultiplier;
-                        positions[i3 + 2] += velocities[i3 + 2] * delta * thrustMultiplier;
+                        // Update particle position
+                        positions[i3] += velocities[i3] * delta * 3;
+                        positions[i3 + 1] += velocities[i3 + 1] * delta;
+                        positions[i3 + 2] += velocities[i3 + 2] * delta;
                     }
                 }
                 particles.geometry.attributes.position.needsUpdate = true;
@@ -2026,135 +1178,10 @@ function animate() {
     if (optionaut4D) {
         optionaut4D.animateRings(elapsedTime);
     }
-    
-    // Update per-rocket HUD if visible
-    if (rocketHUD && rocketHUD.visible) {
-        rocketHUD.update();
-    }
-
-    // Handle gauge hover detection
-    handleGaugeHover();
 
     // Render scene
     if (renderer && scene && camera) {
         renderer.render(scene, camera);
-    }
-}
-
-// Handle mouse hover over gauges for tooltips
-function handleGaugeHover() {
-    if (!raycaster || !camera || !renderer) return;
-    
-    // Update mouse position from current mouse state
-    const rect = renderer.domElement.getBoundingClientRect();
-    if (mouseState.lastX && mouseState.lastY) {
-        mouse.x = ((mouseState.lastX - rect.left) / rect.width) * 2 - 1;
-        mouse.y = -((mouseState.lastY - rect.top) / rect.height) * 2 + 1;
-    } else {
-        return; // No mouse position available
-    }
-    
-    // Update raycaster
-    raycaster.setFromCamera(mouse, camera);
-    
-    // Collect all gauge sprites
-    const allGauges = [];
-    rockets.forEach(rocket => {
-        if (rocket.greekGauges) {
-            allGauges.push(...rocket.greekGauges);
-        }
-    });
-    
-    if (allGauges.length === 0) return;
-    
-    // Find intersections
-    const intersects = raycaster.intersectObjects(allGauges, false);
-    
-    // Hide all tooltips first
-    gaugeTooltips.forEach((tooltip, gauge) => {
-        if (tooltip) {
-            tooltip.style.display = 'none';
-        }
-    });
-    
-    // Show tooltip for hovered gauge
-    if (intersects.length > 0) {
-        const hoveredGaugeSprite = intersects[0].object;
-        const tooltip = gaugeTooltips.get(hoveredGaugeSprite);
-        
-        if (tooltip) {
-            // Get screen position of gauge
-            const vector = new THREE.Vector3();
-            vector.setFromMatrixPosition(hoveredGaugeSprite.matrixWorld);
-            vector.project(camera);
-            
-            const x = (vector.x * 0.5 + 0.5) * window.innerWidth;
-            const y = (-vector.y * 0.5 + 0.5) * window.innerHeight;
-            
-            // Position tooltip near gauge
-            tooltip.style.left = (x + 20) + 'px';
-            tooltip.style.top = (y - 10) + 'px';
-            tooltip.style.display = 'block';
-            hoveredGauge = hoveredGaugeSprite;
-        }
-    } else {
-        hoveredGauge = null;
-    }
-}
-
-// Handle clicking on rockets
-function onRocketClick(event) {
-    if (!raycaster || !camera || !renderer) return;
-    
-    // Calculate mouse position in normalized device coordinates
-    const rect = renderer.domElement.getBoundingClientRect();
-    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-    
-    // Update raycaster
-    raycaster.setFromCamera(mouse, camera);
-    
-    // Get all rocket groups
-    const rocketGroups = rockets.map(r => r.group).filter(g => g);
-    
-    // Find intersections
-    const intersects = raycaster.intersectObjects(rocketGroups, true);
-    
-    if (intersects.length > 0) {
-        // Find which rocket was clicked
-        let clickedRocket = null;
-        let clickedRocketData = null;
-        
-        for (const intersect of intersects) {
-            // Traverse up to find the rocket group
-            let obj = intersect.object;
-            while (obj && obj.parent) {
-                if (rocketGroups.includes(obj)) {
-                    clickedRocket = obj;
-                    break;
-                }
-                obj = obj.parent;
-            }
-            if (clickedRocket) break;
-        }
-        
-        if (clickedRocket) {
-            // Find rocket data
-            clickedRocketData = rockets.find(r => r.group === clickedRocket);
-            
-            if (clickedRocketData && rocketHUD) {
-                // Get Greeks from rocket data or userData
-                const greeks = clickedRocketData.greeks || clickedRocket.userData.greeks || {};
-                const params = clickedRocketData.params || clickedRocket.userData.params || {};
-                rocketHUD.show(clickedRocket, greeks, params);
-                console.log(`🎯 Clicked on rocket: ${params.type} $${params.strike}`);
-            }
-        }
-    } else {
-        // Clicked on empty space - hide HUD
-        if (rocketHUD) {
-            rocketHUD.hide();
-        }
     }
 }
 
@@ -2201,217 +1228,11 @@ window.loadRocketState = function (jsonString) {
     return rocketState.import(jsonString);
 };
 
-// Display camera coordinates function
-window.display_camera = function() {
-    // Get camera and controls from window (exposed during initialization)
-    const cam = window._rocketCamera;
-    const ctrl = window._rocketControls;
-    
-    if (!cam) {
-        console.error('❌ Camera not initialized. Make sure the scene has loaded.');
-        console.error('   Try waiting a moment after page load, then call display_camera() again.');
-        return null;
-    }
-    
-    if (!ctrl) {
-        console.error('❌ Controls not initialized. Make sure the scene has loaded.');
-        console.error('   Try waiting a moment after page load, then call display_camera() again.');
-        return null;
-    }
-    
-    const pos = cam.position.clone();
-    const target = ctrl.target.clone();
-    
-    // Calculate rotation from position and target
-    const direction = new THREE.Vector3().subVectors(target, pos).normalize();
-    const distance = pos.distanceTo(target);
-    const spherical = new THREE.Spherical();
-    spherical.setFromVector3(direction);
-    
-    const cameraInfo = {
-        position: {
-            x: parseFloat(pos.x.toFixed(2)),
-            y: parseFloat(pos.y.toFixed(2)),
-            z: parseFloat(pos.z.toFixed(2))
-        },
-        target: {
-            x: parseFloat(target.x.toFixed(2)),
-            y: parseFloat(target.y.toFixed(2)),
-            z: parseFloat(target.z.toFixed(2))
-        },
-        rotation: {
-            theta: parseFloat((spherical.theta * 180 / Math.PI).toFixed(2)),
-            phi: parseFloat((spherical.phi * 180 / Math.PI).toFixed(2)),
-            radius: parseFloat(distance.toFixed(2))
-        },
-        // Copy-paste ready code
-        code: `camera.position.set(${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)});\ncontrols.target.set(${target.x.toFixed(2)}, ${target.y.toFixed(2)}, ${target.z.toFixed(2)});\ncontrols.update();`
-    };
-    
-    console.log('📷 ===== CAMERA INFORMATION =====');
-    console.log('Position:', cameraInfo.position);
-    console.log('Target:', cameraInfo.target);
-    console.log('Distance:', cameraInfo.rotation.radius);
-    console.log('Rotation (spherical):', { theta: cameraInfo.rotation.theta + '°', phi: cameraInfo.rotation.phi + '°' });
-    console.log('\n📋 Copy-paste code to restore camera:');
-    console.log(cameraInfo.code);
-    console.log('================================');
-    
-    return cameraInfo;
-};
-
-// Create title and info panel
-function createTitleAndInfoPanel() {
-    // Create title at top center
-    const title = document.createElement('div');
-    title.id = 'rocket-title';
-    title.textContent = '🚀 Optionaut 4D';
-    title.style.cssText = `
-        position: fixed;
-        top: 20px;
-        left: 50%;
-        transform: translateX(-50%);
-        font-size: 32px;
-        font-weight: bold;
-        color: #4a90e2;
-        text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
-        z-index: 1000;
-        pointer-events: none;
-        font-family: Arial, sans-serif;
-    `;
-    document.body.appendChild(title);
-    
-    // Create info panel
-    const infoPanel = document.createElement('div');
-    infoPanel.id = 'info-panel';
-    infoPanel.style.cssText = `
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        width: 600px;
-        max-height: 80vh;
-        background: rgba(0, 0, 0, 0.95);
-        color: #ffffff;
-        font-family: Arial, sans-serif;
-        padding: 30px;
-        border-radius: 12px;
-        border: 3px solid #4a90e2;
-        z-index: 2000;
-        overflow-y: auto;
-        display: none;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8);
-    `;
-    
-    infoPanel.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-            <h2 style="color: #4a90e2; margin: 0; font-size: 24px;">🚀 Optionaut 4D - Information</h2>
-            <button id="close-info" style="
-                background: #4a90e2;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 6px;
-                cursor: pointer;
-                font-weight: bold;
-                font-size: 14px;
-            ">Close (I)</button>
-        </div>
-        
-        <div style="margin-bottom: 20px;">
-            <h3 style="color: #00ffff; margin: 10px 0;">🎯 What is Optionaut 4D?</h3>
-            <p style="line-height: 1.6; font-size: 14px;">
-                Optionaut 4D is an interactive 3D visualization of options trading. Each rocket represents an option contract,
-                with its position, movement, and thrust based on the option's Greeks (Delta, Gamma, Theta, Vega).
-            </p>
-        </div>
-        
-        <div style="margin-bottom: 20px;">
-            <h3 style="color: #00ff00; margin: 10px 0;">🌍 Scene Elements</h3>
-            <ul style="line-height: 1.8; font-size: 14px;">
-                <li><strong>Blue Planet (Center):</strong> Represents the underlying asset price (SPY)</li>
-                <li><strong>Green Planets:</strong> Individual spot price planets for each rocket</li>
-                <li><strong>Rockets:</strong> Option contracts - position shows strike vs spot, height shows option price</li>
-                <li><strong>Greek Gauges:</strong> Display Delta, Gamma, Theta, and Vega values above each rocket</li>
-                <li><strong>Cyan Exhaust:</strong> Thrust intensity based on Delta (option sensitivity)</li>
-            </ul>
-        </div>
-        
-        <div style="margin-bottom: 20px;">
-            <h3 style="color: #ffaa00; margin: 10px 0;">📊 Understanding the Visualization</h3>
-            <ul style="line-height: 1.8; font-size: 14px;">
-                <li><strong>ITM (In-The-Money):</strong> Rockets move away from their planet</li>
-                <li><strong>OTM (Out-The-Money):</strong> Rockets move toward their planet (can "crash" into it)</li>
-                <li><strong>Rocket Height:</strong> Option premium/price</li>
-                <li><strong>Exhaust Intensity:</strong> Delta magnitude (price sensitivity)</li>
-                <li><strong>Rocket Position:</strong> Strike price distance from spot price</li>
-            </ul>
-        </div>
-        
-        <div style="margin-bottom: 20px;">
-            <h3 style="color: #ff00ff; margin: 10px 0;">🎮 Controls</h3>
-            <ul style="line-height: 1.8; font-size: 14px;">
-                <li><strong>WASD / Arrow Keys:</strong> Move camera</li>
-                <li><strong>Q / Space:</strong> Move camera up</li>
-                <li><strong>E / Shift:</strong> Move camera down</li>
-                <li><strong>Mouse Drag:</strong> Rotate camera (when follow disabled)</li>
-                <li><strong>I Key:</strong> Toggle this information panel</li>
-                <li><strong>Hover over Gauges:</strong> See tooltips with Greek explanations</li>
-            </ul>
-        </div>
-        
-        <div style="margin-bottom: 20px;">
-            <h3 style="color: #ffff00; margin: 10px 0;">🔧 Console Functions</h3>
-            <ul style="line-height: 1.8; font-size: 14px;">
-                <li><strong>display_camera():</strong> Show current camera coordinates</li>
-                <li><strong>window.rocketState:</strong> Access rocket state manager</li>
-                <li><strong>window.adjustRocket(id, params):</strong> Adjust rocket parameters</li>
-            </ul>
-        </div>
-        
-        <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #4a90e2;">
-            <p style="color: #888; font-size: 12px; margin: 0;">
-                Press <strong>I</strong> to close this panel
-            </p>
-        </div>
-    `;
-    
-    document.body.appendChild(infoPanel);
-    
-    // Close button handler
-    const closeBtn = document.getElementById('close-info');
-    if (closeBtn) {
-        closeBtn.addEventListener('click', () => {
-            toggleInfoPanel();
-        });
-    }
-    
-    // ESC key to close
-    window.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && infoPanel.style.display === 'block') {
-            toggleInfoPanel();
-        }
-    });
-}
-
-// Toggle info panel
-function toggleInfoPanel() {
-    const infoPanel = document.getElementById('info-panel');
-    if (!infoPanel) return;
-    
-    if (infoPanel.style.display === 'none' || infoPanel.style.display === '') {
-        infoPanel.style.display = 'block';
-    } else {
-        infoPanel.style.display = 'none';
-    }
-}
-
 console.log('✅ Rocket state API exposed:');
 console.log('   window.rocketState - access rocket state manager');
 console.log('   window.adjustRocket(id, params) - adjust rocket position/params');
 console.log('   window.getRocketState() - export state as JSON');
 console.log('   window.loadRocketState(json) - import state from JSON');
-console.log('   window.display_camera() - display current camera coordinates');
 
 // Handle window resize
 window.addEventListener('resize', () => {
