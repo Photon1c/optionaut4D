@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Option Rockets - Manual Input Mode</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        /* Manual Controls Panel */
+        #controls {
+            position: fixed;
+            top: 70px; /* Position below top bar */
+            right: 10px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.85);
+            padding: 16px;
+            border-radius: 8px;
+            min-width: 240px;
+            max-width: 280px;
+            font-family: Arial, sans-serif;
+            color: white;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(74, 144, 226, 0.3);
+        }
+
+        /* Additional top bar for IV controls and theme toggle */
+        #top-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 999;
+            background: rgba(0, 0, 0, 0.85);
+            padding: 12px 20px;
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            border-bottom: 2px solid rgba(74, 144, 226, 0.5);
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+        }
+
+        #iv-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding-left: 16px;
+            border-left: 1px solid rgba(74, 144, 226, 0.3);
+        }
+
+        #iv-controls label {
+            color: #aaa;
+            font-size: 12px;
+            font-family: 'Courier New', monospace;
+        }
+
+        #iv-slider {
+            width: 120px;
+        }
+
+        #iv-display {
+            color: #00ff00;
+            font-size: 12px;
+            font-family: 'Courier New', monospace;
+            min-width: 50px;
+        }
+
+        /* Theme toggle button */
+        #theme-toggle {
+            padding: 8px 16px;
+            background: rgba(100, 200, 255, 0.2);
+            border: 1px solid rgba(100, 200, 255, 0.5);
+            border-radius: 4px;
+            color: #64c8ff;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-left: auto;
+        }
+
+        #theme-toggle:hover {
+            background: rgba(100, 200, 255, 0.3);
+            transform: translateY(-1px);
+        }
+
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-family: Arial, sans-serif;
+            font-size: 1.2em;
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 10px;
+            display: none;
+        }
+
+        #loading-bar-container {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80%;
+            height: 30px;
+            background: rgba(0, 0, 0, 0.1);
+            border-radius: 5px;
+        }
+
+        #loading-bar {
+            width: 0%;
+            height: 100%;
+            background: #4caf50;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Top bar with IV controls and theme toggle -->
+    <div id="top-bar">
+        <!-- Vol Slider -->
+        <div id="iv-controls">
+            <label>IV:</label>
+            <input type="range" id="iv-slider" min="-50" max="50" value="0" step="5">
+            <span id="iv-display">+0%</span>
+        </div>
+
+        <!-- Theme Toggle -->
+        <button id="theme-toggle">
+            🎨 <span id="theme-name">Orbit</span>
+        </button>
+    </div>
+
+    <!-- Manual Controls Panel (created dynamically, container here) -->
+    <div id="controls"></div>
+
+    <div id="loading">Loading Scene...</div>
+    <div id="loading-bar-container">
+        <div id="loading-bar"></div>
+    </div>
+    <script type="module" src="/src/rockets/rockets-entry.js"></script>
+</body>
+</html>
+
