@@ -13,7 +13,7 @@ export default {
     assetsDir: 'assets',
     rollupOptions: {
       input: {
-        rockets: resolve(__dirname, 'backend/rockets.html'),
+        rockets: resolve(__dirname, 'backend/rockets-manual.html'),
       },
       output: {
         // Ensure consistent naming for debugging
@@ -29,3 +29,4 @@ export default {
     }
   }
 };
+
