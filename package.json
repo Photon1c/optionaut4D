@@ -1,30 +1,15 @@
 {
-  "name": "optionaut-4d-rockets",
+  "name": "agiworld",
   "version": "1.0.0",
-  "description": "3D Options Visualization - Interactive rocket-based options trading visualization using Three.js",
-  "main": "src/rockets/rockets-entry.js",
-  "type": "module",
+  "description": "Threejs workflow simulator",
+  "main": "index.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [
-    "options",
-    "trading",
-    "threejs",
-    "3d",
-    "visualization",
-    "rockets",
-    "greeks",
-    "delta",
-    "gamma",
-    "theta",
-    "vega",
-    "interactive",
-    "finance"
-  ],
+  "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
@@ -33,14 +18,5 @@
   },
   "devDependencies": {
     "vite": "^6.3.5"
-  },
-  "repository": {
-    "type": "git",
-    "url": ""
-  },
-  "engines": {
-    "node": ">=14.0.0",
-    "npm": ">=6.0.0"
   }
 }
-
