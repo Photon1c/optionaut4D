@@ -13,7 +13,7 @@ export default {
     assetsDir: 'assets',
     rollupOptions: {
       input: {
-        rockets: resolve(__dirname, 'public/rockets.html'), // Non-parser version
+        rockets: resolve(__dirname, 'backend/rockets.html'), // Non-parser version
       },
       output: {
         // Ensure consistent naming for debugging
@@ -35,4 +35,5 @@ export default {
     }
   }
 };
+
 
