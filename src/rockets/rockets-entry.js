@@ -8,6 +8,14 @@ import { ExportSystem } from './exportSystem.js';
 import { GIFExporter } from './gifExporter.js';
 import { RocketHUD } from './rocketHUD.js';
 import { createRocketModel, createExhaustParticles } from './rocketmodel.js';
+import { 
+    createMoneynessRocket, 
+    createHorizonDome, 
+    createStratosphericFog,
+    updateRocketAnimation,
+    updateExplosion,
+    createImpactExplosion
+} from './rocketEnhancements.js';
 import { calculateProfitLoss, calculateIntrinsicValue, isInTheMoney, calculateBreakeven } from './rocketMetrics.js';
 
 console.log('Option Rockets entry script started');
@@ -279,6 +287,14 @@ async function initScene() {
         scene = new THREE.Scene();
         scene.background = new THREE.Color(0x000011); // Deep space
         scene.fog = new THREE.Fog(0x000011, 50, 500);
+        
+        // Add horizon dome (Truman Show boundary) and stratospheric fog
+        console.log('Creating horizon dome and atmospheric effects...');
+        const horizonDome = createHorizonDome(scene);
+        const stratosphericFog = createStratosphericFog(scene);
+        scene.userData.horizonDome = horizonDome;
+        scene.userData.stratosphericFog = stratosphericFog;
+        
         console.log('Scene set up');
         updateLoadingBar(40);
 
@@ -817,6 +833,7 @@ function createRocket(params) {
         spotPrice: currentSpotPrice, // Per-rocket spot price (like optionaut-app)
         launchPrice: launchPrice, // Fixed launch/strike price for reference line
         premium: premium, // Premium paid (for P/L calculation)
+        initialOptionPrice: greeks.price, // Store initial option price for P/L calculation
         profitLoss: profitLoss, // Current P/L
         intrinsicValue: intrinsicValue,
         isITM: isITM,
@@ -945,8 +962,10 @@ function createLaunchPriceLine(strike, currentSpot, type) {
     lineRing.rotation.x = -Math.PI / 2; // Horizontal plane
     lineRing.position.y = height; // At strike price height
     
-    // Add label sprite
-    const label = createLabel(`Strike: $${strike}`, 0, height, 0);
+    // Add label sprite - position it closer to the ring/globe (lower Y offset)
+    // Move label down closer to the ring for better visibility
+    const labelYOffset = -2; // Negative to move down closer to ring
+    const label = createLabel(`Strike: $${strike}`, 0, height + labelYOffset, 0);
     lineRing.userData.label = label;
     
     return lineRing;
@@ -1206,16 +1225,16 @@ function createControlsPanel() {
     addGridRow(grid, 'Type:', 'select', 'option-type', '<option value="call">Call</option><option value="put">Put</option>');
 
     // Strike
-    addGridRow(grid, 'Strike:', 'number', 'strike-input', '100', '1');
+    addGridRow(grid, 'Strike:', 'number', 'strike-input', '690', '1');
 
     // Spot
-    addGridRow(grid, 'Spot:', 'number', 'spot-input', '100', '1');
+    addGridRow(grid, 'Spot:', 'number', 'spot-input', '690', '1');
 
     // IV
-    addGridRow(grid, 'IV:', 'number', 'iv-input', '0.16', '0.01');
+    addGridRow(grid, 'IV:', 'number', 'iv-input', '0.14', '0.01');
 
     // DTE
-    addGridRow(grid, 'DTE:', 'number', 'dte-input', '1', '1');
+    addGridRow(grid, 'DTE:', 'number', 'dte-input', '60', '1');
 
     container.appendChild(grid);
 
@@ -1409,7 +1428,7 @@ function createRocketSpotSlider(rocket, index) {
     // Reduced range to prevent rockets from going too far: ±30 instead of ±50
     slider.min = Math.max(0, strike - 30);
     slider.max = strike + 30;
-    slider.step = 0.5;
+    slider.step = 2.0; // Less sensitive - larger step size
     slider.value = currentSpot;
     slider.style.cssText = 'flex: 1; height: 4px;';
     slider.addEventListener('input', (e) => {
@@ -1431,7 +1450,10 @@ function createRocketSpotSlider(rocket, index) {
     plDisplay.style.cssText = 'margin-top: 6px; font-size: 11px; font-family: monospace;';
     const updatePLDisplay = () => {
         const currentSpot = rocket.spotPrice !== undefined ? rocket.spotPrice : (params.spot || 100);
-        const premium = rocket.premium !== undefined ? rocket.premium : (params.entry || 0.5);
+        // Fix P/L calculation: use stored premium, or entry, or initial option price
+        const premium = rocket.premium !== undefined 
+            ? rocket.premium 
+            : (params.entry || rocket.initialOptionPrice || 0.5);
         const greeks = rocket.greeks || calculateGreeks(currentSpot, strike, params.timeToExpiry || 0.0027, params.iv || 0.16, 0.02, type);
         const profitLoss = calculateProfitLoss(greeks.price, premium, 1);
         const isITM = isInTheMoney(currentSpot, strike, type);
@@ -1600,7 +1622,7 @@ function updateNavigation(delta) {
     controls.target.copy(camera.position.clone().add(lookDirection.multiplyScalar(10)));
 }
 
-// Update camera to follow rocket(s) - keeps them in frame
+// Update camera to follow rocket(s) - centers on the followed rocket
 function updateCameraFollow() {
     if (!cameraFollowEnabled) {
         return;
@@ -1623,78 +1645,47 @@ function updateCameraFollow() {
 
     const targetPos = targetRocket.position.clone();
 
-    // Calculate direction from origin (planet) to rocket
-    const toRocket = targetPos.clone();
-    if (toRocket.length() < 0.1) {
-        toRocket.set(1, 0, 0);
-    } else {
-        toRocket.normalize();
-    }
-
-    // Dynamic camera: zoom out to keep rockets in frame
-    // Calculate bounding box of all rockets AND the planet
-    let minX = 0, maxX = 0; // Include planet at origin
-    let minY = 0, maxY = 0;
-    let minZ = 0, maxZ = 0;
-
-    activeRockets.forEach(rocket => {
-        const pos = rocket.group.position;
-        minX = Math.min(minX, pos.x);
-        maxX = Math.max(maxX, pos.x);
-        minY = Math.min(minY, pos.y);
-        maxY = Math.max(maxY, pos.y);
-        minZ = Math.min(minZ, pos.z);
-        maxZ = Math.max(maxZ, pos.z);
-    });
-
-    // Calculate center of all rockets and planet
-    const centerX = (minX + maxX) / 2;
-    const centerY = (minY + maxY) / 2;
-    const centerZ = (minZ + maxZ) / 2;
-    const center = new THREE.Vector3(centerX, centerY, centerZ);
-
-    // Calculate size of bounding box
-    const sizeX = maxX - minX;
-    const sizeY = maxY - minY;
-    const sizeZ = maxZ - minZ;
-    const maxSize = Math.max(sizeX, sizeY, sizeZ, 20); // Minimum 20 units
-
-    // Dynamic follow distance based on rocket spread
-    // Ensure we can see everything (FOV 75 degrees)
-    // Distance needed = (size / 2) / tan(FOV / 2)
-    // tan(37.5) approx 0.76
-    const requiredDistance = (maxSize / 2) / 0.6; // Add some margin
-    const followDistance = Math.max(40, requiredDistance);
-    const followHeight = Math.max(20, maxSize * 0.4);
-
-    // Position camera to see the spread
-    // We want to be perpendicular to the main axis of distribution if possible, 
-    // or just at a 45 degree angle which usually works well for 3D
-    const angle = Math.PI / 4;
-
+    // Calculate direction from camera to rocket for optimal viewing angle
+    const cameraToRocket = targetPos.clone().sub(camera.position);
+    const distanceToRocket = cameraToRocket.length();
+    
+    // Optimal viewing distance: close enough to see details, far enough to see context
+    const optimalDistance = 30;
+    const minDistance = 15;
+    const maxDistance = 60;
+    
+    // Calculate ideal camera position - offset from rocket at good viewing angle
+    const viewAngle = Math.PI / 6; // 30 degrees above horizontal
+    const viewAzimuth = Math.PI / 4; // 45 degrees around
+    
+    // Calculate offset vector
+    const offsetX = Math.cos(viewAzimuth) * Math.cos(viewAngle) * optimalDistance;
+    const offsetY = Math.sin(viewAngle) * optimalDistance;
+    const offsetZ = Math.sin(viewAzimuth) * Math.cos(viewAngle) * optimalDistance;
+    
     const idealPosition = new THREE.Vector3(
-        center.x + Math.cos(angle) * followDistance,
-        center.y + followHeight,
-        center.z + Math.sin(angle) * followDistance
+        targetPos.x + offsetX,
+        targetPos.y + offsetY,
+        targetPos.z + offsetZ
     );
 
-    // Ensure minimum height above planet
-    idealPosition.y = Math.max(idealPosition.y, 30);
+    // Ensure minimum height above planet (don't go below ground)
+    idealPosition.y = Math.max(idealPosition.y, 20);
 
-    // Smooth camera movement
-    camera.position.lerp(idealPosition, 0.2);
+    // Smooth camera movement - faster when far away
+    const lerpSpeed = distanceToRocket > 50 ? 0.3 : 0.15;
+    camera.position.lerp(idealPosition, lerpSpeed);
 
-    // Look at center of all rockets
-    controls.target.lerp(center, 0.2);
+    // Look directly at the rocket (not center of all rockets)
+    controls.target.lerp(targetPos, lerpSpeed);
     camera.lookAt(controls.target);
 
     // Debug logging (throttled)
     if (Math.random() < 0.01) {
-        const distToCenter = camera.position.distanceTo(center);
-        console.log(`📷 Following ${activeRockets.length} rocket(s)`);
+        const distToRocket = camera.position.distanceTo(targetPos);
+        console.log(`📷 Following rocket at: (${targetPos.x.toFixed(1)}, ${targetPos.y.toFixed(1)}, ${targetPos.z.toFixed(1)})`);
         console.log(`📷 Camera: (${camera.position.x.toFixed(1)}, ${camera.position.y.toFixed(1)}, ${camera.position.z.toFixed(1)})`);
-        console.log(`📷 Center: (${center.x.toFixed(1)}, ${center.y.toFixed(1)}, ${center.z.toFixed(1)})`);
-        console.log(`📷 Distance to center: ${distToCenter.toFixed(1)}, Follow distance: ${followDistance.toFixed(1)}`);
+        console.log(`📷 Distance to rocket: ${distToRocket.toFixed(1)}`);
     }
 }
 
@@ -1740,7 +1731,11 @@ function animate() {
             // Get current spot price for this rocket
             const currentSpot = rocket.spotPrice !== undefined ? rocket.spotPrice : rocket.params.spot;
             const strike = rocket.params.strike;
-            const premium = rocket.premium !== undefined ? rocket.premium : (rocket.params.entry || rocket.params.spot);
+            // Fix P/L calculation: premium should be entry price (premium paid when position was opened)
+            // Use stored premium, or entry from params, or initial option price as fallback
+            const premium = rocket.premium !== undefined 
+                ? rocket.premium 
+                : (rocket.params.entry || rocket.initialOptionPrice || 0.5);
             
             // Recalculate Greeks with current spot price
             const newGreeks = calculateGreeks(
@@ -1774,34 +1769,58 @@ function animate() {
             const actualDistance = Math.max(minDistance, Math.min(maxDistance, baseDistance));
             const angle = rocket.group.userData.angle || (index * 60) * (Math.PI / 180);
             
-            // Determine direction: ITM moves away from planet, OTM moves toward planet
+            // Determine direction: ITM moves away from spot price, OTM moves toward spot price
             // For calls: ITM = spot > strike (away), OTM = spot < strike (toward)
             // For puts: ITM = spot < strike (away), OTM = spot > strike (toward)
             const isITM = (rocket.params.type === 'call' && currentSpot > strike) || (rocket.params.type === 'put' && currentSpot < strike);
+            // Fixed: OTM should move toward spot (negative), ITM should move away (positive)
+            // When OTM: spot < strike for calls or spot > strike for puts, rocket should be closer to spot (lower Y)
             const directionMultiplier = isITM ? 1 : -1; // ITM: away (+1), OTM: toward (-1)
             
-            // Calculate rocket position based on spot price location
+            // Calculate spot price location in 3D space
             const spotX = (currentSpot - 680) * 0.3; // Scale spot price to X position (centered around 680)
             const spotZ = Math.sin(angle) * 20; // Space rockets around
+            const spotY = Math.max(15, newGreeks.price * 20); // Spot price height (same as option price)
             
             // Rocket position relative to spot price location
+            // When OTM (directionMultiplier = -1), rocket moves toward spot (closer, lower)
+            // When ITM (directionMultiplier = 1), rocket moves away from spot (further, higher)
             const targetX = spotX + Math.cos(angle) * actualDistance * directionMultiplier;
             const targetZ = spotZ + Math.sin(angle) * actualDistance * directionMultiplier;
             // Height = option price (scaled appropriately)
-            const targetY = Math.max(15, newGreeks.price * 20);
+            // OTM options should be lower (closer to spot), ITM options should be higher (further from spot)
+            // Fixed: Invert the logic - OTM should move DOWN (negative offset), ITM should move UP (positive offset)
+            const baseHeight = Math.max(15, newGreeks.price * 20);
+            // When OTM: move DOWN (negative), when ITM: move UP (positive)
+            const heightOffset = isITM ? actualDistance * 0.5 : -actualDistance * 0.5; // ITM higher, OTM lower
+            const targetY = baseHeight + heightOffset;
             
             const targetPosition = new THREE.Vector3(targetX, targetY, targetZ);
             
-            // Update spot price planet position - position at rocket center
+            // Update spot price planet position - position right before the top cone
             if (rocket.spotPricePlanet) {
-                // Position planet at rocket center
-                rocket.spotPricePlanet.position.lerp(targetPosition, 15.0 * delta); // Fast follow
+                // Calculate rocket's forward direction in world space
+                const rocketForward = new THREE.Vector3(1, 0, 0); // Rocket's local +X direction
+                rocketForward.applyQuaternion(rocket.group.quaternion);
                 
-                // Update planet label - position on planet surface (above rocket)
+                // Get rocket dimensions
+                const rocketLength = rocket.group.userData.rocketLength || (4.7 * 2.125); // bodyLength + noseLength
+                const bodyLength = 3.5 * 2.125; // Body length from rocket model
+                const noseLength = 1.2 * 2.125; // Nose length from rocket model
+                
+                // Position planet closer to nose cone (at junction of body and nose, or slightly into nose)
+                // Front of body is at bodyLength/2, nose starts at bodyLength, so position at bodyLength + small offset
+                const offsetFromCenter = (bodyLength / 2) + (noseLength * 0.2); // Closer to nose cone
+                const planetOffset = rocketForward.clone().multiplyScalar(offsetFromCenter);
+                const planetPosition = targetPosition.clone().add(planetOffset);
+                
+                rocket.spotPricePlanet.position.lerp(planetPosition, 15.0 * delta); // Fast follow
+                
+                // Update planet label - position on planet surface (above planet)
                 if (rocket.spotPricePlanet.userData.label) {
                     const labelPlanetRadius = 1.5; // Match the smaller planet size
                     rocket.spotPricePlanet.userData.label.position.lerp(
-                        new THREE.Vector3(targetX, targetY + labelPlanetRadius, targetZ),
+                        new THREE.Vector3(planetPosition.x, planetPosition.y + labelPlanetRadius, planetPosition.z),
                         10.0 * delta
                     );
                     
@@ -1832,6 +1851,106 @@ function animate() {
             const extremeITM = Math.abs(newGreeks.delta) > 0.9;
             rocket.group.userData.isWarpSpeed = extremeITM;
             
+            // Check for deeply OTM (crash condition) - delta < 0.1 for calls/puts
+            const deeplyOTM = Math.abs(newGreeks.delta) < 0.1;
+            const wasDeeplyOTM = rocket.group.userData.wasDeeplyOTM || false;
+            rocket.group.userData.wasDeeplyOTM = deeplyOTM;
+            
+            // Handle crash into planet when deeply OTM
+            if (deeplyOTM && !rocket.group.userData.hasCrashed) {
+                // Check if rocket is close to spot price planet surface
+                const planetY = rocket.spotPricePlanet ? rocket.spotPricePlanet.position.y : targetY;
+                const planetRadius = 1.5; // Spot price planet radius
+                const distanceToPlanet = Math.abs(targetY - planetY);
+                
+                // If rocket is very close to planet surface (within planet radius + small margin), trigger crash
+                if (distanceToPlanet < planetRadius + 2 && targetY < planetY + planetRadius + 3) {
+                    rocket.group.userData.hasCrashed = true;
+                    
+                    // Create colored impact explosion at planet surface
+                    // Use planet position as crash point
+                    const crashPosition = rocket.spotPricePlanet 
+                        ? rocket.spotPricePlanet.position.clone()
+                        : new THREE.Vector3(targetX, planetY + planetRadius, targetZ);
+                    
+                    const explosion = createImpactExplosion(crashPosition, 200);
+                    scene.add(explosion);
+                    rocket.group.userData.explosion = explosion;
+                    
+                    // Add red damage glow to rocket
+                    rocket.group.traverse((child) => {
+                        if (child.isMesh && child.material) {
+                            if (child.material.emissive !== undefined) {
+                                child.material.emissive.setHex(0xff0000);
+                                child.material.emissiveIntensity = 0.8;
+                            }
+                        }
+                    });
+                    
+                    // Make rocket tumble/rotate when crashed
+                    rocket.group.userData.isCrashed = true;
+                    
+                    console.log(`💥 Rocket crashed into planet! Position: (${targetX.toFixed(2)}, ${targetY.toFixed(2)}, ${targetZ.toFixed(2)})`);
+                }
+            }
+            
+            // Apply crash rotation/tumbling if crashed
+            if (rocket.group.userData.isCrashed) {
+                rocket.group.rotation.x += delta * 2.0;
+                rocket.group.rotation.y += delta * 1.5;
+                rocket.group.rotation.z += delta * 1.8;
+            }
+            
+            // Handle warp drive animation when deeply ITM (but don't stray too far)
+            if (extremeITM && !rocket.group.userData.warpEffect) {
+                // Create warp drive visual effect (trail, particles, etc.)
+                rocket.group.userData.warpEffect = true;
+                
+                // Add blue warp glow
+                rocket.group.traverse((child) => {
+                    if (child.isMesh && child.material) {
+                        if (child.material.emissive !== undefined) {
+                            const originalEmissive = child.material.emissive.getHex();
+                            child.material.emissive.setHex(0x00aaff);
+                            child.material.emissiveIntensity = 1.2;
+                            child.userData.originalEmissive = originalEmissive;
+                        }
+                    }
+                });
+                
+                console.log(`🚀 Warp drive engaged! Delta: ${newGreeks.delta.toFixed(3)}`);
+            } else if (!extremeITM && rocket.group.userData.warpEffect) {
+                // Disable warp effect when no longer ITM
+                rocket.group.userData.warpEffect = false;
+                rocket.group.traverse((child) => {
+                    if (child.isMesh && child.material && child.userData.originalEmissive !== undefined) {
+                        child.material.emissive.setHex(child.userData.originalEmissive);
+                        child.material.emissiveIntensity = 0.5;
+                    }
+                });
+            }
+            
+            // Apply warp speed animation (pulsing, rotation, but limit distance from planet)
+            if (extremeITM) {
+                // Add pulsing effect
+                const pulse = Math.sin(elapsedTime * 5) * 0.1 + 1.0;
+                rocket.group.scale.set(pulse, pulse, pulse);
+                
+                // Add rotation effect
+                rocket.group.rotation.x += delta * 0.5;
+                
+                // Ensure rocket doesn't stray too far from planet (limit max distance)
+                const maxDistanceFromPlanet = 25; // Don't go further than 25 units
+                const distanceFromPlanet = targetPosition.length();
+                if (distanceFromPlanet > maxDistanceFromPlanet) {
+                    // Scale back position to stay within bounds
+                    targetPosition.normalize().multiplyScalar(maxDistanceFromPlanet);
+                }
+            } else {
+                // Reset scale when not in warp
+                rocket.group.scale.lerp(new THREE.Vector3(1, 1, 1), 5 * delta);
+            }
+            
             // Smoothly move rocket to target position
             const moveSpeed = extremeITM ? 20.0 : 10.0; // Faster movement when in warp speed
             rocket.group.position.lerp(targetPosition, moveSpeed * delta);
@@ -1844,6 +1963,16 @@ function animate() {
             const targetRotation = rocket.params.type === 'put' ? Math.PI : 0;
             rocket.group.rotation.y = THREE.MathUtils.lerp(rocket.group.rotation.y, targetRotation, 5 * delta);
             rocket.group.rotation.z = THREE.MathUtils.lerp(rocket.group.rotation.z, deltaAngle, 5 * delta);
+            
+            // Enhanced moneyness-based animation (if rocket has moneyness data)
+            if (rocket.group.userData.moneyness) {
+                updateRocketAnimation(rocket.group, elapsedTime, delta);
+            }
+            
+            // Update explosion effects if present
+            if (rocket.group.userData.explosion) {
+                updateExplosion(rocket.group.userData.explosion, delta);
+            }
             
             // Store updated target position
             rocket.group.userData.targetPosition = targetPosition;
