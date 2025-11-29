@@ -712,8 +712,18 @@ function createRocket(params) {
     const launchPrice = strike; // Fixed launch/strike price
     const currentSpotPrice = spot; // Current spot price (can change)
     // Premium is the entry price (what was paid to open the position)
-    // If entry is provided, use it; otherwise use the initial option price
-    const premium = entry !== undefined && entry !== null ? entry : greeks.price;
+    // CRITICAL: This is the price paid when opening the position - it NEVER changes
+    // If entry is provided, use it; otherwise use the initial option price at launch
+    let premium = (entry !== undefined && entry !== null && entry > 0) ? entry : greeks.price;
+    
+    // Validate premium
+    if (premium <= 0 || isNaN(premium)) {
+        console.error(`❌ Invalid premium calculated: ${premium}, using fallback 0.01`);
+        premium = 0.01; // Fallback minimum
+    }
+    
+    // Log premium storage for debugging
+    console.log(`💰 Storing premium for ${type.toUpperCase()} $${strike}: $${premium.toFixed(2)} (entry=${entry !== undefined ? entry : 'undefined'}, initialPrice=$${greeks.price.toFixed(2)})`);
     
     // Create individual spot price planet for this rocket
     const spotPricePlanet = createSpotPricePlanet(currentSpotPrice, rockets.length);
@@ -1464,19 +1474,25 @@ function createRocketSpotSlider(rocket, index) {
     const updatePLDisplay = () => {
         const currentSpot = rocket.spotPrice !== undefined ? rocket.spotPrice : (params.spot || 100);
         // P/L calculation: premium is the entry price (what was paid to open the position)
+        // CRITICAL: Premium should NEVER change - it's the entry price at launch
         let premium = rocket.premium;
         if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
             premium = params.entry;
             if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
                 premium = rocket.initialOptionPrice;
                 if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
-                    premium = greeks.price; // Last resort
+                    // Last resort: use initial option price (should never happen)
+                    console.warn(`⚠️ Rocket slider: No valid premium found!`);
+                    premium = 0.01; // Minimum fallback
                 }
             }
         }
         premium = Math.max(0.01, premium); // Ensure valid positive number
+        
         // Recalculate Greeks with current spot for accurate P/L
         const greeks = rocket.greeks || calculateGreeks(currentSpot, strike, params.timeToExpiry || 0.0027, params.iv || 0.16, 0.02, type);
+        
+        // P/L = (Current Option Price - Entry Premium) × 100
         const profitLoss = calculateProfitLoss(greeks.price, premium, 1);
         const isITM = isInTheMoney(currentSpot, strike, type);
         
@@ -1758,23 +1774,8 @@ function animate() {
             // Get current spot price for this rocket
             const currentSpot = rocket.spotPrice !== undefined ? rocket.spotPrice : rocket.params.spot;
             const strike = rocket.params.strike;
-            // P/L calculation: premium is the entry price (what was paid to open the position)
-            // Priority: stored premium > params.entry > initialOptionPrice > current price as last resort
-            let premium = rocket.premium;
-            if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
-                premium = rocket.params.entry;
-                if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
-                    premium = rocket.initialOptionPrice;
-                    if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
-                        // Last resort: use current price (but this means P/L will be 0 initially)
-                        premium = newGreeks.price;
-                    }
-                }
-            }
-            // Ensure premium is a valid positive number
-            premium = Math.max(0.01, premium); // Minimum 1 cent
             
-            // Recalculate Greeks with current spot price
+            // Recalculate Greeks with current spot price FIRST (needed for premium fallback)
             const newGreeks = calculateGreeks(
                 currentSpot,
                 strike,
@@ -1785,7 +1786,28 @@ function animate() {
             );
             rocket.greeks = newGreeks;
             
-            // Update P/L calculation
+            // P/L calculation: premium is the entry price (what was paid to open the position)
+            // CRITICAL: Premium should NEVER change - it's the entry price at launch
+            // Priority: stored premium > params.entry > initialOptionPrice (never use current price!)
+            let premium = rocket.premium;
+            if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
+                // Try params.entry
+                premium = rocket.params.entry;
+                if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
+                    // Use initial option price at launch (this is the price when rocket was created)
+                    premium = rocket.initialOptionPrice;
+                    if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
+                        // Last resort: use initial Greeks price (from when rocket was created)
+                        // This should never happen if rocket was created correctly
+                        console.warn(`⚠️ Rocket #${index}: No valid premium found! Using initial option price.`);
+                        premium = rocket.initialOptionPrice || 0.01;
+                    }
+                }
+            }
+            // Ensure premium is a valid positive number (but don't override if it's valid)
+            premium = Math.max(0.01, premium);
+            
+            // Update P/L calculation: (Current Option Price - Entry Premium) × 100
             const newProfitLoss = calculateProfitLoss(newGreeks.price, premium, 1);
             const newIntrinsicValue = calculateIntrinsicValue(currentSpot, strike, rocket.params.type);
             const newIsITM = isInTheMoney(currentSpot, strike, rocket.params.type);
@@ -1796,11 +1818,12 @@ function animate() {
             // Clear P/L calculation logging (only log when spot changes significantly)
             if (!rocket.lastLoggedSpot || Math.abs(rocket.lastLoggedSpot - currentSpot) > 5) {
                 console.log(`💰 P/L Calculation for ${rocket.params.type.toUpperCase()} $${strike}:`);
-                console.log(`   Premium Paid: $${premium.toFixed(2)} (entry price when position opened)`);
+                console.log(`   Entry Premium: $${premium.toFixed(2)} (paid when position opened)`);
                 console.log(`   Current Option Price: $${newGreeks.price.toFixed(2)} (Black-Scholes at spot $${currentSpot.toFixed(2)})`);
-                console.log(`   P/L Formula: (Current Price - Premium) × 100 = ($${newGreeks.price.toFixed(2)} - $${premium.toFixed(2)}) × 100`);
+                console.log(`   P/L Formula: (Current Price - Entry Premium) × 100 = ($${newGreeks.price.toFixed(2)} - $${premium.toFixed(2)}) × 100`);
                 console.log(`   Profit/Loss: $${newProfitLoss >= 0 ? '+' : ''}${newProfitLoss.toFixed(2)}`);
                 console.log(`   Status: ${newIsITM ? 'ITM' : 'OTM'} | Delta: ${newGreeks.delta.toFixed(3)}`);
+                console.log(`   Intrinsic Value: $${newIntrinsicValue.toFixed(2)} | Time Value: $${(newGreeks.price - newIntrinsicValue).toFixed(2)}`);
                 rocket.lastLoggedSpot = currentSpot;
             }
             
