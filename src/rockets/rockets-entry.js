@@ -738,32 +738,38 @@ function createRocket(params) {
     // Calculate angle for spacing rockets around spot planet
     const rocketAngle = planetAngle;
     
-    // Position rocket relative to its spot price planet (not origin)
-    // Use improved scaling with sigmoid-like function for smoother OTM/ATM behavior
+    // Position rocket relative to its spot price planet
+    // Key: OTM = left side (negative P/L), ITM = right side (positive P/L)
     const strikeDiff = Math.abs(strike - currentSpotPrice);
-    const strikePercent = strikeDiff / currentSpotPrice; // Percentage difference
     
-    // Sigmoid-like scaling: closer to ATM = closer to planet, far OTM = further but bounded
-    // Use logarithmic scaling for better distribution
-    const baseDistance = Math.log(1 + strikePercent * 10) * 2; // Logarithmic scaling
-    const minDistance = 3; // Much closer minimum distance
-    const maxDistance = 20; // Reduced max distance
-    const actualDistance = Math.max(minDistance, Math.min(maxDistance, baseDistance));
+    // Calculate distance from spot price planet - use proportional scaling that doesn't blow out
+    const strikePercent = strikeDiff / Math.max(strike, currentSpotPrice);
+    const normalizedDiff = Math.min(strikePercent, 0.15); // Cap at 15% to prevent extreme distances
     
-    // Determine direction: ITM moves away from planet, OTM moves toward planet
-    // For calls: ITM = spot > strike (away), OTM = spot < strike (toward)
-    // For puts: ITM = spot < strike (away), OTM = spot > strike (toward)
-    const directionMultiplier = isITM ? 1 : -1; // ITM: away (+1), OTM: toward (-1)
+    // Smooth distance scaling - ATM is close, OTM/ITM are further but bounded
+    const sigmoid = (x) => x / (1 + Math.abs(x)); // Simple sigmoid
+    const distanceFactor = sigmoid(normalizedDiff * 20);
+    const baseDistance = 2 + distanceFactor * 8; // Range: 2-10 units
+    const actualDistance = Math.min(baseDistance, 10); // Hard cap at 10 units
     
-    // Calculate rocket position based on spot price location
-    const spotX = (currentSpotPrice - 680) * 0.3; // Scale spot price to X position (centered around 680)
-    const spotZ = Math.sin(rocketAngle) * 20; // Space rockets around
+    // Calculate spot price planet position in 3D space
+    const spotX = (currentSpotPrice - strike) * 0.2; // Scale: $1 spot change = 0.2 units X
+    const spotZ = Math.sin(rocketAngle) * 15; // Space rockets around
+    const spotY = Math.max(10, greeks.price * 15); // Spot price height
     
-    // Rocket position relative to spot price location
-    const rocketX = spotX + Math.cos(rocketAngle) * actualDistance * directionMultiplier;
-    const rocketZ = spotZ + Math.sin(rocketAngle) * actualDistance * directionMultiplier;
-    // Height = option price (scaled appropriately)
-    const rocketY = Math.max(15, greeks.price * 20);
+    // Rocket position: OTM moves left (negative X), ITM moves right (positive X)
+    const xDirection = type === 'call' 
+        ? (currentSpotPrice < strike ? -1 : 1)  // Calls: OTM left, ITM right
+        : (currentSpotPrice > strike ? -1 : 1); // Puts: OTM left, ITM right
+    
+    // Position rocket relative to spot price planet
+    const rocketX = spotX + Math.cos(rocketAngle) * actualDistance * xDirection;
+    const rocketZ = spotZ + Math.sin(rocketAngle) * actualDistance * 0.5; // Reduced Z spread
+    
+    // Height: OTM lower (closer to planet), ITM higher (further from planet)
+    const baseHeight = Math.max(10, greeks.price * 15);
+    const heightOffset = isITM ? actualDistance * 0.3 : -actualDistance * 0.3;
+    const rocketY = baseHeight + heightOffset;
     
     rocketGroup.position.set(rocketX, rocketY, rocketZ);
     
@@ -1429,11 +1435,13 @@ function createRocketSpotSlider(rocket, index) {
     
     const slider = document.createElement('input');
     slider.type = 'range';
-    // Even range centered on strike - ensure smooth slider movement
+    // Slider range: OTM on left (lower values), ITM on right (higher values)
+    // For calls: OTM = spot < strike (left), ITM = spot > strike (right)
+    // For puts: OTM = spot > strike (left), ITM = spot < strike (right)
     const range = 50; // ±50 from strike for good range
     slider.min = Math.max(0, strike - range);
     slider.max = strike + range;
-    slider.step = 1.0; // Smooth step size (1 dollar increments)
+    slider.step = 0.5; // Smooth step size (0.5 dollar increments for finer control)
     slider.value = currentSpot;
     slider.style.cssText = 'flex: 1; height: 4px;';
     slider.addEventListener('input', (e) => {
@@ -1467,10 +1475,16 @@ function createRocketSpotSlider(rocket, index) {
             }
         }
         premium = Math.max(0.01, premium); // Ensure valid positive number
+        // Recalculate Greeks with current spot for accurate P/L
         const greeks = rocket.greeks || calculateGreeks(currentSpot, strike, params.timeToExpiry || 0.0027, params.iv || 0.16, 0.02, type);
         const profitLoss = calculateProfitLoss(greeks.price, premium, 1);
         const isITM = isInTheMoney(currentSpot, strike, type);
-        plDisplay.innerHTML = `P/L: <span style="color: ${profitLoss >= 0 ? '#00ff00' : '#ff4444'}; font-weight: bold;">${profitLoss >= 0 ? '+' : ''}$${profitLoss.toFixed(2)}</span> <span style="color: ${isITM ? '#00ff00' : '#888'}; font-size: 10px;">(${isITM ? 'ITM' : 'OTM'})</span>`;
+        
+        // Display P/L with clear indication: OTM (left/negative) vs ITM (right/positive)
+        const plColor = profitLoss >= 0 ? '#00ff00' : '#ff4444';
+        const statusColor = isITM ? '#00ff00' : '#888';
+        const statusText = isITM ? 'ITM' : 'OTM';
+        plDisplay.innerHTML = `P/L: <span style="color: ${plColor}; font-weight: bold;">${profitLoss >= 0 ? '+' : ''}$${profitLoss.toFixed(2)}</span> <span style="color: ${statusColor}; font-size: 10px;">(${statusText})</span>`;
     };
     updatePLDisplay();
     card.appendChild(plDisplay);
@@ -1790,43 +1804,48 @@ function animate() {
                 rocket.lastLoggedSpot = currentSpot;
             }
             
-            // Position rocket relative to its spot price planet (not origin)
-            // Use improved scaling with sigmoid-like function for smoother OTM/ATM behavior
-            const strikeDiff = Math.abs(strike - currentSpot);
-            const strikePercent = strikeDiff / currentSpot; // Percentage difference
+            // Position rocket relative to its spot price planet
+            // Key: OTM = left side of slider (negative P/L), ITM = right side (positive P/L)
+            // For calls: OTM when spot < strike, ITM when spot > strike
+            // For puts: OTM when spot > strike, ITM when spot < strike
             
-            // Sigmoid-like scaling: closer to ATM = closer to planet, far OTM = further but bounded
-            // Use logarithmic scaling for better distribution
-            const baseDistance = Math.log(1 + strikePercent * 10) * 2; // Logarithmic scaling
-            const minDistance = 3; // Much closer minimum distance
-            const maxDistance = 20; // Reduced max distance
-            const actualDistance = Math.max(minDistance, Math.min(maxDistance, baseDistance));
+            const isITM = (rocket.params.type === 'call' && currentSpot > strike) || (rocket.params.type === 'put' && currentSpot < strike);
+            const strikeDiff = Math.abs(strike - currentSpot);
+            
+            // Calculate distance from spot price planet - use proportional scaling that doesn't blow out
+            // Use a smoother, bounded distance calculation
+            const strikePercent = strikeDiff / Math.max(strike, currentSpot); // Use max to avoid division issues
+            const normalizedDiff = Math.min(strikePercent, 0.15); // Cap at 15% to prevent extreme distances
+            
+            // Smooth distance scaling - ATM is close, OTM/ITM are further but bounded
+            // Use a sigmoid-like function for smooth transitions
+            const sigmoid = (x) => x / (1 + Math.abs(x)); // Simple sigmoid
+            const distanceFactor = sigmoid(normalizedDiff * 20); // Scale factor
+            const baseDistance = 2 + distanceFactor * 8; // Range: 2-10 units (much smaller!)
+            const actualDistance = Math.min(baseDistance, 10); // Hard cap at 10 units
+            
             const angle = rocket.group.userData.angle || (index * 60) * (Math.PI / 180);
             
-            // Determine direction: ITM moves away from spot price, OTM moves toward spot price
-            // For calls: ITM = spot > strike (away), OTM = spot < strike (toward)
-            // For puts: ITM = spot < strike (away), OTM = spot > strike (toward)
-            const isITM = (rocket.params.type === 'call' && currentSpot > strike) || (rocket.params.type === 'put' && currentSpot < strike);
-            // Fixed: OTM should move toward spot (negative), ITM should move away (positive)
-            // When OTM: spot < strike for calls or spot > strike for puts, rocket should be closer to spot (lower Y)
-            const directionMultiplier = isITM ? 1 : -1; // ITM: away (+1), OTM: toward (-1)
+            // Calculate spot price planet position in 3D space
+            // Spot price moves along X-axis based on actual spot value
+            const spotX = (currentSpot - strike) * 0.2; // Scale: $1 spot change = 0.2 units X movement
+            const spotZ = Math.sin(angle) * 15; // Space rockets around (reduced from 20)
+            const spotY = Math.max(10, newGreeks.price * 15); // Spot price height (reduced scaling)
             
-            // Calculate spot price location in 3D space
-            const spotX = (currentSpot - 680) * 0.3; // Scale spot price to X position (centered around 680)
-            const spotZ = Math.sin(angle) * 20; // Space rockets around
-            const spotY = Math.max(15, newGreeks.price * 20); // Spot price height (same as option price)
+            // Rocket position: OTM moves left (negative X), ITM moves right (positive X)
+            // For calls: OTM (spot < strike) = left, ITM (spot > strike) = right
+            // For puts: OTM (spot > strike) = left, ITM (spot < strike) = right
+            const xDirection = rocket.params.type === 'call' 
+                ? (currentSpot < strike ? -1 : 1)  // Calls: OTM left, ITM right
+                : (currentSpot > strike ? -1 : 1); // Puts: OTM left, ITM right
             
-            // Rocket position relative to spot price location
-            // When OTM (directionMultiplier = -1), rocket moves toward spot (closer, lower)
-            // When ITM (directionMultiplier = 1), rocket moves away from spot (further, higher)
-            const targetX = spotX + Math.cos(angle) * actualDistance * directionMultiplier;
-            const targetZ = spotZ + Math.sin(angle) * actualDistance * directionMultiplier;
-            // Height = option price (scaled appropriately)
-            // OTM options should be lower (closer to spot), ITM options should be higher (further from spot)
-            // Fixed: Invert the logic - OTM should move DOWN (negative offset), ITM should move UP (positive offset)
-            const baseHeight = Math.max(15, newGreeks.price * 20);
-            // When OTM: move DOWN (negative), when ITM: move UP (positive)
-            const heightOffset = isITM ? actualDistance * 0.5 : -actualDistance * 0.5; // ITM higher, OTM lower
+            // Position rocket relative to spot price planet
+            const targetX = spotX + Math.cos(angle) * actualDistance * xDirection;
+            const targetZ = spotZ + Math.sin(angle) * actualDistance * 0.5; // Reduced Z spread
+            
+            // Height: OTM lower (closer to planet), ITM higher (further from planet)
+            const baseHeight = Math.max(10, newGreeks.price * 15); // Reduced base height
+            const heightOffset = isITM ? actualDistance * 0.3 : -actualDistance * 0.3; // Smaller offset
             const targetY = baseHeight + heightOffset;
             
             const targetPosition = new THREE.Vector3(targetX, targetY, targetZ);
