@@ -180,7 +180,7 @@ async function initScene() {
             1000
         );
         // Set initial camera position from user preference
-        camera.position.set(9.48, 43.63, 20.21);
+        camera.position.set(-8.11, 28.13, 33.51);
         console.log('Camera set up');
         updateLoadingBar(20);
 
@@ -367,7 +367,7 @@ async function initScene() {
         controls.dampingFactor = 0.05;
         controls.minDistance = 10;
         controls.maxDistance = 500;
-        controls.target.set(6.48, 39.43, 11.64); // Set initial target from user preference
+        controls.target.set(-5.53, 23.61, 24.97); // Set initial target from user preference
         controls.enabled = true; // Enable manual controls
         camera.lookAt(controls.target); // Look at the target
         console.log('Controls set up');
@@ -966,9 +966,9 @@ function createLaunchPriceLine(strike, currentSpot, type) {
     lineRing.rotation.x = -Math.PI / 2; // Horizontal plane
     lineRing.position.y = height; // At strike price height
     
-    // Add label sprite - position it closer to the ring/globe (lower Y offset)
-    // Move label down closer to the ring for better visibility
-    const labelYOffset = -2; // Negative to move down closer to ring
+    // Add label sprite - position it much closer to the ring/globe surface
+    // Move label down very close to the ring for better visibility
+    const labelYOffset = -4; // Negative to move down much closer to ring surface
     const label = createLabel(`Strike: $${strike}`, 0, height + labelYOffset, 0);
     lineRing.userData.label = label;
     
@@ -1891,10 +1891,15 @@ function animate() {
             const wasExtremeITM = rocket.group.userData.isWarpSpeed || false;
             rocket.group.userData.isWarpSpeed = extremeITM;
             
-            // Check for deeply OTM (crash condition) - delta < 0.1 for calls/puts
-            const deeplyOTM = Math.abs(newGreeks.delta) < 0.1;
+            // Check for deeply OTM (crash condition) - delta < 0.15 for calls/puts (more lenient threshold)
+            const deeplyOTM = Math.abs(newGreeks.delta) < 0.15;
             const wasDeeplyOTM = rocket.group.userData.wasDeeplyOTM || false;
             rocket.group.userData.wasDeeplyOTM = deeplyOTM;
+            
+            // Debug OTM crash detection (throttled)
+            if (deeplyOTM && Math.random() < 0.05) {
+                console.log(`⚠️ Deeply OTM detected: Delta=${newGreeks.delta.toFixed(3)}, Distance to planet=${targetPosition.distanceTo(rocket.spotPricePlanet ? rocket.spotPricePlanet.position : targetPosition).toFixed(2)}`);
+            }
             
             // When deeply OTM, make rocket move toward planet (crash trajectory)
             if (deeplyOTM && !rocket.group.userData.hasCrashed) {
@@ -1903,9 +1908,10 @@ function animate() {
                 const distanceToPlanet = targetPosition.distanceTo(planetPos);
                 
                 // Apply stronger gravity effect - pull rocket toward planet with increasing force
-                const gravityStrength = 0.5 + (0.1 - Math.abs(newGreeks.delta)) * 2; // Stronger as delta approaches 0
+                const deltaMagnitude = Math.abs(newGreeks.delta);
+                const gravityStrength = 0.8 + (0.15 - deltaMagnitude) * 5; // Much stronger as delta approaches 0
                 const directionToPlanet = planetPos.clone().sub(targetPosition).normalize();
-                const gravityPull = directionToPlanet.multiplyScalar(gravityStrength * delta * 15);
+                const gravityPull = directionToPlanet.multiplyScalar(gravityStrength * delta * 20);
                 targetPosition.add(gravityPull);
                 
                 // Add spinning/tumbling effect as rocket falls
@@ -1913,8 +1919,8 @@ function animate() {
                 rocket.group.rotation.y += delta * 1.2;
                 rocket.group.rotation.z += delta * 1.8;
                 
-                // Trigger crash when rocket is very close to planet
-                if (distanceToPlanet < planetRadius + 1.5) {
+                // Trigger crash when rocket is very close to planet (more lenient threshold)
+                if (distanceToPlanet < planetRadius + 3) {
                     rocket.group.userData.hasCrashed = true;
                     
                     // Create dramatic colored impact explosion at planet surface

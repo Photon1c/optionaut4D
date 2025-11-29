@@ -138,8 +138,9 @@ export function createRocketModel(params) {
     // ============================================
     // EXHAUST PLUME (at base, pointing backward)
     // ============================================
-    const exhaustBaseRadius = bodyRadius * 0.65;
-    const exhaustTipRadius = bodyRadius * 1.3;
+    // Make exhaust 50% smaller
+    const exhaustBaseRadius = bodyRadius * 0.325; // 50% of 0.65
+    const exhaustTipRadius = bodyRadius * 0.65; // 50% of 1.3
     
     const exhaustColor = type === 'call' ? 0x00ffff : 0xff4444;
     const exhaustMaterial = new THREE.MeshStandardMaterial({
