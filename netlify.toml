@@ -2,8 +2,21 @@
   publish = "dist"
   command = "npm run build"
 
+# Redirect root to rockets-manual.html (the built file from vite)
 [[redirects]]
   from = "/"
+  to = "/backend/rockets.html"
+  status = 200
+
+# Fallback redirect for backend path (if the file exists there)
+[[redirects]]
+  from = "/backend/rockets.html"
+  to = "/backend/rockets.html"
+  status = 200
+
+# Redirect old rockets.html to rockets-manual.html
+[[redirects]]
+  from = "/rockets.html"
   to = "/backend/rockets.html"
   status = 200
 
@@ -22,3 +35,26 @@
   for = "/*.html"
   [headers.values]
     Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/*.json"
+  [headers.values]
+    Cache-Control = "public, max-age=3600"
+
+# Security headers
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-XSS-Protection = "1; mode=block"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# CORS headers for API calls (if needed)
+[[headers]]
+  for = "/api/*"
+  [headers.values]
+    Access-Control-Allow-Origin = "*"
+    Access-Control-Allow-Methods = "GET, POST, OPTIONS"
+    Access-Control-Allow-Headers = "Content-Type"
+
