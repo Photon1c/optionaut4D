@@ -13,9 +13,7 @@ export default {
     assetsDir: 'assets',
     rollupOptions: {
       input: {
-        'rockets-manual': resolve(__dirname, 'public/rockets-manual.html'),
-        'rockets': resolve(__dirname, 'public/rockets.html'),
-        'backend-rockets': resolve(__dirname, 'backend/rockets.html'),
+        'rockets-manual': resolve(__dirname, 'backend/rockets.html'), /
       },
       output: {
         // Force ALL filenames to lowercase for Netlify/Grok compatibility
@@ -97,4 +95,5 @@ export default {
     }
   }
 };
+
 
