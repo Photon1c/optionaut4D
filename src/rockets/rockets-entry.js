@@ -1933,14 +1933,21 @@ function animate() {
             const wasExtremeITM = rocket.group.userData.isWarpSpeed || false;
             rocket.group.userData.isWarpSpeed = extremeITM;
             
-            // Check for deeply OTM (crash condition) - delta < 0.15 for calls/puts (more lenient threshold)
+            // Debug ITM detection (throttled)
+            if (Math.random() < 0.01) {
+                console.log(`📊 ITM Check: Type=${rocket.params.type}, Delta=${newGreeks.delta.toFixed(3)}, DeltaValue=${deltaValue.toFixed(3)}, ExtremeITM=${extremeITM}, Spot=${currentSpot.toFixed(2)}, Strike=${strike}`);
+            }
+            
+            // Check for deeply OTM (crash condition) - delta < 0.15 for calls/puts
+            // For calls: deeply OTM when spot << strike (delta approaches 0)
+            // For puts: deeply OTM when spot >> strike (delta approaches 0)
             const deeplyOTM = Math.abs(newGreeks.delta) < 0.15;
             const wasDeeplyOTM = rocket.group.userData.wasDeeplyOTM || false;
             rocket.group.userData.wasDeeplyOTM = deeplyOTM;
             
-            // Debug OTM crash detection (throttled)
-            if (deeplyOTM && Math.random() < 0.05) {
-                console.log(`⚠️ Deeply OTM detected: Delta=${newGreeks.delta.toFixed(3)}, Distance to planet=${targetPosition.distanceTo(rocket.spotPricePlanet ? rocket.spotPricePlanet.position : targetPosition).toFixed(2)}`);
+            // Debug OTM crash detection - log every time when deeply OTM
+            if (deeplyOTM && !wasDeeplyOTM) {
+                console.log(`⚠️ Deeply OTM detected: Delta=${newGreeks.delta.toFixed(3)}, Spot=${currentSpot.toFixed(2)}, Strike=${strike}, Type=${rocket.params.type}`);
             }
             
             // When deeply OTM, make rocket move toward planet (crash trajectory)
@@ -1951,18 +1958,19 @@ function animate() {
                 
                 // Apply stronger gravity effect - pull rocket toward planet with increasing force
                 const deltaMagnitude = Math.abs(newGreeks.delta);
-                const gravityStrength = 0.8 + (0.15 - deltaMagnitude) * 5; // Much stronger as delta approaches 0
+                const gravityStrength = 1.0 + (0.15 - deltaMagnitude) * 8; // Much stronger as delta approaches 0
                 const directionToPlanet = planetPos.clone().sub(targetPosition).normalize();
-                const gravityPull = directionToPlanet.multiplyScalar(gravityStrength * delta * 20);
+                const gravityPull = directionToPlanet.multiplyScalar(gravityStrength * delta * 25);
                 targetPosition.add(gravityPull);
                 
                 // Add spinning/tumbling effect as rocket falls
-                rocket.group.rotation.x += delta * 1.5;
-                rocket.group.rotation.y += delta * 1.2;
-                rocket.group.rotation.z += delta * 1.8;
+                rocket.group.rotation.x += delta * 2.0;
+                rocket.group.rotation.y += delta * 1.5;
+                rocket.group.rotation.z += delta * 2.2;
                 
-                // Trigger crash when rocket is very close to planet (more lenient threshold)
-                if (distanceToPlanet < planetRadius + 3) {
+                // Trigger crash immediately when deeply OTM OR when very close to planet
+                // Make crash trigger more aggressive - if deeply OTM, crash should happen
+                if (distanceToPlanet < planetRadius + 5 || deltaMagnitude < 0.05) {
                     rocket.group.userData.hasCrashed = true;
                     
                     // Create dramatic colored impact explosion at planet surface
@@ -2061,6 +2069,7 @@ function animate() {
             // Handle warp drive animation when deeply ITM (but don't stray too far)
             if (extremeITM && !wasExtremeITM) {
                 // Just entered warp speed - activate effects
+                console.log(`🚀 Warp drive engaged! Delta: ${newGreeks.delta.toFixed(3)}, DeltaValue: ${deltaValue.toFixed(3)}, Type: ${rocket.params.type}, Spot: ${currentSpot.toFixed(2)}, Strike: ${strike}`);
                 rocket.group.userData.warpEffect = true;
                 
                 // Add dramatic blue warp glow with pulsing
@@ -2130,6 +2139,11 @@ function animate() {
             }
             
             // Apply warp speed animation (pulsing, rotation, but limit distance from planet)
+            // Debug warp speed status
+            if (extremeITM && Math.random() < 0.02) {
+                console.log(`🚀 Warp speed active: Delta=${newGreeks.delta.toFixed(3)}, DeltaValue=${deltaValue.toFixed(3)}, Spot=${currentSpot.toFixed(2)}`);
+            }
+            
             if (extremeITM) {
                 // More dramatic pulsing effect with multiple frequencies
                 const pulse1 = Math.sin(elapsedTime * 8) * 0.12;
