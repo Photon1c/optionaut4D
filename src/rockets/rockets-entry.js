@@ -388,13 +388,13 @@ async function initScene() {
         // Create title and info panel
         createTitleAndInfoPanel();
 
-        // Create default rocket (695 SPY Call, 60 DTE)
+        // Create default rocket (690 SPY Call, 60 DTE, IV 14%)
             const rocket = createRocket({
                 type: 'call',
-                strike: 695,
+                strike: 690,
                 spot: currentSpot,
                 timeToExpiry: 60 / 365, // 60 days to expiry
-                iv: 0.16,
+                iv: 0.14, // 14% IV
                 entry: 0.5
             });
 
@@ -711,7 +711,9 @@ function createRocket(params) {
     // Store spot price and launch price per rocket (like optionaut-app)
     const launchPrice = strike; // Fixed launch/strike price
     const currentSpotPrice = spot; // Current spot price (can change)
-    const premium = entry || greeks.price; // Premium paid (entry price or current price if not specified)
+    // Premium is the entry price (what was paid to open the position)
+    // If entry is provided, use it; otherwise use the initial option price
+    const premium = entry !== undefined && entry !== null ? entry : greeks.price;
     
     // Create individual spot price planet for this rocket
     const spotPricePlanet = createSpotPricePlanet(currentSpotPrice, rockets.length);
@@ -841,6 +843,8 @@ function createRocket(params) {
         greekGauges: [deltaGauge, gammaGauge, thetaGauge, vegaGauge, ivGauge], // Greek gauges (including IV)
         launchTime: Date.now() // Track when rocket was launched
     });
+    
+    // Store premium for P/L calculation (logged only when spot changes significantly)
     
     // Store in rocket group userData for easy access
     rocketGroup.userData.spotPrice = currentSpotPrice;
@@ -1425,10 +1429,11 @@ function createRocketSpotSlider(rocket, index) {
     
     const slider = document.createElement('input');
     slider.type = 'range';
-    // Reduced range to prevent rockets from going too far: ±30 instead of ±50
-    slider.min = Math.max(0, strike - 30);
-    slider.max = strike + 30;
-    slider.step = 2.0; // Less sensitive - larger step size
+    // Even range centered on strike - ensure smooth slider movement
+    const range = 50; // ±50 from strike for good range
+    slider.min = Math.max(0, strike - range);
+    slider.max = strike + range;
+    slider.step = 1.0; // Smooth step size (1 dollar increments)
     slider.value = currentSpot;
     slider.style.cssText = 'flex: 1; height: 4px;';
     slider.addEventListener('input', (e) => {
@@ -1450,10 +1455,18 @@ function createRocketSpotSlider(rocket, index) {
     plDisplay.style.cssText = 'margin-top: 6px; font-size: 11px; font-family: monospace;';
     const updatePLDisplay = () => {
         const currentSpot = rocket.spotPrice !== undefined ? rocket.spotPrice : (params.spot || 100);
-        // Fix P/L calculation: use stored premium, or entry, or initial option price
-        const premium = rocket.premium !== undefined 
-            ? rocket.premium 
-            : (params.entry || rocket.initialOptionPrice || 0.5);
+        // P/L calculation: premium is the entry price (what was paid to open the position)
+        let premium = rocket.premium;
+        if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
+            premium = params.entry;
+            if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
+                premium = rocket.initialOptionPrice;
+                if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
+                    premium = greeks.price; // Last resort
+                }
+            }
+        }
+        premium = Math.max(0.01, premium); // Ensure valid positive number
         const greeks = rocket.greeks || calculateGreeks(currentSpot, strike, params.timeToExpiry || 0.0027, params.iv || 0.16, 0.02, type);
         const profitLoss = calculateProfitLoss(greeks.price, premium, 1);
         const isITM = isInTheMoney(currentSpot, strike, type);
@@ -1731,11 +1744,21 @@ function animate() {
             // Get current spot price for this rocket
             const currentSpot = rocket.spotPrice !== undefined ? rocket.spotPrice : rocket.params.spot;
             const strike = rocket.params.strike;
-            // Fix P/L calculation: premium should be entry price (premium paid when position was opened)
-            // Use stored premium, or entry from params, or initial option price as fallback
-            const premium = rocket.premium !== undefined 
-                ? rocket.premium 
-                : (rocket.params.entry || rocket.initialOptionPrice || 0.5);
+            // P/L calculation: premium is the entry price (what was paid to open the position)
+            // Priority: stored premium > params.entry > initialOptionPrice > current price as last resort
+            let premium = rocket.premium;
+            if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
+                premium = rocket.params.entry;
+                if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
+                    premium = rocket.initialOptionPrice;
+                    if (premium === undefined || premium === null || isNaN(premium) || premium <= 0) {
+                        // Last resort: use current price (but this means P/L will be 0 initially)
+                        premium = newGreeks.price;
+                    }
+                }
+            }
+            // Ensure premium is a valid positive number
+            premium = Math.max(0.01, premium); // Minimum 1 cent
             
             // Recalculate Greeks with current spot price
             const newGreeks = calculateGreeks(
@@ -1755,6 +1778,17 @@ function animate() {
             rocket.profitLoss = newProfitLoss;
             rocket.intrinsicValue = newIntrinsicValue;
             rocket.isITM = newIsITM;
+            
+            // Clear P/L calculation logging (only log when spot changes significantly)
+            if (!rocket.lastLoggedSpot || Math.abs(rocket.lastLoggedSpot - currentSpot) > 5) {
+                console.log(`💰 P/L Calculation for ${rocket.params.type.toUpperCase()} $${strike}:`);
+                console.log(`   Premium Paid: $${premium.toFixed(2)} (entry price when position opened)`);
+                console.log(`   Current Option Price: $${newGreeks.price.toFixed(2)} (Black-Scholes at spot $${currentSpot.toFixed(2)})`);
+                console.log(`   P/L Formula: (Current Price - Premium) × 100 = ($${newGreeks.price.toFixed(2)} - $${premium.toFixed(2)}) × 100`);
+                console.log(`   Profit/Loss: $${newProfitLoss >= 0 ? '+' : ''}${newProfitLoss.toFixed(2)}`);
+                console.log(`   Status: ${newIsITM ? 'ITM' : 'OTM'} | Delta: ${newGreeks.delta.toFixed(3)}`);
+                rocket.lastLoggedSpot = currentSpot;
+            }
             
             // Position rocket relative to its spot price planet (not origin)
             // Use improved scaling with sigmoid-like function for smoother OTM/ATM behavior
@@ -1814,7 +1848,9 @@ function animate() {
                 const planetOffset = rocketForward.clone().multiplyScalar(offsetFromCenter);
                 const planetPosition = targetPosition.clone().add(planetOffset);
                 
-                rocket.spotPricePlanet.position.lerp(planetPosition, 15.0 * delta); // Fast follow
+                // Smooth movement - use same lerp speed as rocket movement to keep them connected
+                const planetLerpSpeed = 15.0 * delta;
+                rocket.spotPricePlanet.position.lerp(planetPosition, planetLerpSpeed);
                 
                 // Update planet label - position on planet surface (above planet)
                 if (rocket.spotPricePlanet.userData.label) {
@@ -1847,8 +1883,12 @@ function animate() {
                 rocket.group.userData.spotPlanetPosition = targetPosition.clone();
             }
             
-            // Check for extreme ITM (warp speed condition) - delta > 0.9
-            const extremeITM = Math.abs(newGreeks.delta) > 0.9;
+            // Check for extreme ITM (warp speed condition) - delta > 0.9 for calls, delta < -0.9 for puts
+            // For calls: extreme ITM when delta > 0.9
+            // For puts: extreme ITM when delta < -0.9
+            const deltaValue = rocket.params.type === 'call' ? newGreeks.delta : -newGreeks.delta;
+            const extremeITM = deltaValue > 0.9;
+            const wasExtremeITM = rocket.group.userData.isWarpSpeed || false;
             rocket.group.userData.isWarpSpeed = extremeITM;
             
             // Check for deeply OTM (crash condition) - delta < 0.1 for calls/puts
@@ -1856,71 +1896,172 @@ function animate() {
             const wasDeeplyOTM = rocket.group.userData.wasDeeplyOTM || false;
             rocket.group.userData.wasDeeplyOTM = deeplyOTM;
             
-            // Handle crash into planet when deeply OTM
+            // When deeply OTM, make rocket move toward planet (crash trajectory)
             if (deeplyOTM && !rocket.group.userData.hasCrashed) {
-                // Check if rocket is close to spot price planet surface
-                const planetY = rocket.spotPricePlanet ? rocket.spotPricePlanet.position.y : targetY;
-                const planetRadius = 1.5; // Spot price planet radius
-                const distanceToPlanet = Math.abs(targetY - planetY);
+                const planetPos = rocket.spotPricePlanet ? rocket.spotPricePlanet.position : targetPosition;
+                const planetRadius = 1.5;
+                const distanceToPlanet = targetPosition.distanceTo(planetPos);
                 
-                // If rocket is very close to planet surface (within planet radius + small margin), trigger crash
-                if (distanceToPlanet < planetRadius + 2 && targetY < planetY + planetRadius + 3) {
+                // Apply stronger gravity effect - pull rocket toward planet with increasing force
+                const gravityStrength = 0.5 + (0.1 - Math.abs(newGreeks.delta)) * 2; // Stronger as delta approaches 0
+                const directionToPlanet = planetPos.clone().sub(targetPosition).normalize();
+                const gravityPull = directionToPlanet.multiplyScalar(gravityStrength * delta * 15);
+                targetPosition.add(gravityPull);
+                
+                // Add spinning/tumbling effect as rocket falls
+                rocket.group.rotation.x += delta * 1.5;
+                rocket.group.rotation.y += delta * 1.2;
+                rocket.group.rotation.z += delta * 1.8;
+                
+                // Trigger crash when rocket is very close to planet
+                if (distanceToPlanet < planetRadius + 1.5) {
                     rocket.group.userData.hasCrashed = true;
                     
-                    // Create colored impact explosion at planet surface
-                    // Use planet position as crash point
-                    const crashPosition = rocket.spotPricePlanet 
-                        ? rocket.spotPricePlanet.position.clone()
-                        : new THREE.Vector3(targetX, planetY + planetRadius, targetZ);
-                    
-                    const explosion = createImpactExplosion(crashPosition, 200);
+                    // Create dramatic colored impact explosion at planet surface
+                    const crashPosition = planetPos.clone();
+                    const explosion = createImpactExplosion(crashPosition, 400); // Even more particles
                     scene.add(explosion);
                     rocket.group.userData.explosion = explosion;
                     
-                    // Add red damage glow to rocket
+                    // Add dramatic red damage glow to rocket with pulsing
                     rocket.group.traverse((child) => {
                         if (child.isMesh && child.material) {
                             if (child.material.emissive !== undefined) {
+                                if (!child.userData.originalEmissive) {
+                                    child.userData.originalEmissive = child.material.emissive.getHex();
+                                }
                                 child.material.emissive.setHex(0xff0000);
-                                child.material.emissiveIntensity = 0.8;
+                                child.material.emissiveIntensity = 1.2;
                             }
                         }
                     });
                     
                     // Make rocket tumble/rotate when crashed
                     rocket.group.userData.isCrashed = true;
+                    rocket.group.userData.crashTime = elapsedTime;
                     
-                    console.log(`💥 Rocket crashed into planet! Position: (${targetX.toFixed(2)}, ${targetY.toFixed(2)}, ${targetZ.toFixed(2)})`);
+                    // Snap rocket to planet surface
+                    targetPosition.copy(planetPos);
+                    
+                    // Add continuous smoke trail effect
+                    if (!rocket.group.userData.crashSmoke) {
+                        // Create animated smoke particles at crash site
+                        const smokeGeometry = new THREE.BufferGeometry();
+                        const smokeCount = 100;
+                        const smokePositions = new Float32Array(smokeCount * 3);
+                        const smokeVelocities = new Float32Array(smokeCount * 3);
+                        for (let i = 0; i < smokeCount * 3; i += 3) {
+                            smokePositions[i] = crashPosition.x + (Math.random() - 0.5) * 3;
+                            smokePositions[i + 1] = crashPosition.y + Math.random() * 1;
+                            smokePositions[i + 2] = crashPosition.z + (Math.random() - 0.5) * 3;
+                            // Upward velocity
+                            smokeVelocities[i] = (Math.random() - 0.5) * 0.5;
+                            smokeVelocities[i + 1] = Math.random() * 0.8 + 0.2;
+                            smokeVelocities[i + 2] = (Math.random() - 0.5) * 0.5;
+                        }
+                        smokeGeometry.setAttribute('position', new THREE.BufferAttribute(smokePositions, 3));
+                        const smokeMaterial = new THREE.PointsMaterial({
+                            color: 0x333333,
+                            size: 0.8,
+                            transparent: true,
+                            opacity: 0.7,
+                            blending: THREE.NormalBlending
+                        });
+                        const smoke = new THREE.Points(smokeGeometry, smokeMaterial);
+                        smoke.userData.positions = smokePositions;
+                        smoke.userData.velocities = smokeVelocities;
+                        scene.add(smoke);
+                        rocket.group.userData.crashSmoke = smoke;
+                    }
+                    
+                    console.log(`💥 Rocket crashed into planet! Delta: ${newGreeks.delta.toFixed(3)}, Distance: ${distanceToPlanet.toFixed(2)}`);
                 }
             }
             
             // Apply crash rotation/tumbling if crashed
             if (rocket.group.userData.isCrashed) {
-                rocket.group.rotation.x += delta * 2.0;
-                rocket.group.rotation.y += delta * 1.5;
-                rocket.group.rotation.z += delta * 1.8;
+                // More dramatic tumbling with acceleration
+                const crashAge = elapsedTime - (rocket.group.userData.crashTime || elapsedTime);
+                const tumbleSpeed = 2.0 + crashAge * 0.5; // Accelerating tumble
+                rocket.group.rotation.x += delta * tumbleSpeed;
+                rocket.group.rotation.y += delta * (tumbleSpeed * 0.9);
+                rocket.group.rotation.z += delta * (tumbleSpeed * 1.1);
+                
+                // Pulsing red glow
+                rocket.group.traverse((child) => {
+                    if (child.isMesh && child.material && child.material.emissiveIntensity !== undefined) {
+                        child.material.emissiveIntensity = 1.0 + Math.sin(elapsedTime * 8) * 0.4;
+                    }
+                });
+                
+                // Animate smoke particles
+                if (rocket.group.userData.crashSmoke && rocket.group.userData.crashSmoke.userData.positions) {
+                    const smoke = rocket.group.userData.crashSmoke;
+                    const positions = smoke.userData.positions;
+                    const velocities = smoke.userData.velocities;
+                    for (let i = 0; i < positions.length; i += 3) {
+                        positions[i] += velocities[i] * delta;
+                        positions[i + 1] += velocities[i + 1] * delta;
+                        positions[i + 2] += velocities[i + 2] * delta;
+                        // Fade out over time
+                        velocities[i + 1] *= 0.98; // Slow down
+                    }
+                    smoke.geometry.attributes.position.needsUpdate = true;
+                }
             }
             
             // Handle warp drive animation when deeply ITM (but don't stray too far)
-            if (extremeITM && !rocket.group.userData.warpEffect) {
-                // Create warp drive visual effect (trail, particles, etc.)
+            if (extremeITM && !wasExtremeITM) {
+                // Just entered warp speed - activate effects
                 rocket.group.userData.warpEffect = true;
                 
-                // Add blue warp glow
+                // Add dramatic blue warp glow with pulsing
                 rocket.group.traverse((child) => {
                     if (child.isMesh && child.material) {
                         if (child.material.emissive !== undefined) {
-                            const originalEmissive = child.material.emissive.getHex();
+                            if (!child.userData.originalEmissive) {
+                                child.userData.originalEmissive = child.material.emissive.getHex();
+                            }
                             child.material.emissive.setHex(0x00aaff);
-                            child.material.emissiveIntensity = 1.2;
-                            child.userData.originalEmissive = originalEmissive;
+                            child.material.emissiveIntensity = 1.5;
                         }
                     }
                 });
                 
-                console.log(`🚀 Warp drive engaged! Delta: ${newGreeks.delta.toFixed(3)}`);
-            } else if (!extremeITM && rocket.group.userData.warpEffect) {
-                // Disable warp effect when no longer ITM
+                // Create warp trail particles with colors
+                if (!rocket.group.userData.warpTrail) {
+                    const trailGeometry = new THREE.BufferGeometry();
+                    const trailCount = 150; // More particles for better trail
+                    const trailPositions = new Float32Array(trailCount * 3);
+                    const trailColors = new Float32Array(trailCount * 3);
+                    for (let i = 0; i < trailCount * 3; i += 3) {
+                        trailPositions[i] = targetPosition.x;
+                        trailPositions[i + 1] = targetPosition.y;
+                        trailPositions[i + 2] = targetPosition.z;
+                        // Blue/cyan colors with variation
+                        trailColors[i] = 0.0; // R
+                        trailColors[i + 1] = 0.6 + Math.random() * 0.4; // G
+                        trailColors[i + 2] = 1.0; // B
+                    }
+                    trailGeometry.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
+                    trailGeometry.setAttribute('color', new THREE.BufferAttribute(trailColors, 3));
+                    const trailMaterial = new THREE.PointsMaterial({
+                        size: 0.4,
+                        vertexColors: true,
+                        transparent: true,
+                        opacity: 0.9,
+                        blending: THREE.AdditiveBlending
+                    });
+                    const trail = new THREE.Points(trailGeometry, trailMaterial);
+                    scene.add(trail);
+                    rocket.group.userData.warpTrail = trail;
+                    rocket.group.userData.trailPositions = trailPositions;
+                    rocket.group.userData.trailColors = trailColors;
+                }
+                
+                console.log(`🚀 Warp drive engaged! Delta: ${newGreeks.delta.toFixed(3)}, Type: ${rocket.params.type}`);
+            } else if (!extremeITM && wasExtremeITM) {
+                // Just exited warp speed - disable effects
                 rocket.group.userData.warpEffect = false;
                 rocket.group.traverse((child) => {
                     if (child.isMesh && child.material && child.userData.originalEmissive !== undefined) {
@@ -1928,27 +2069,140 @@ function animate() {
                         child.material.emissiveIntensity = 0.5;
                     }
                 });
+                
+                // Remove warp trail
+                if (rocket.group.userData.warpTrail) {
+                    scene.remove(rocket.group.userData.warpTrail);
+                    rocket.group.userData.warpTrail.geometry.dispose();
+                    rocket.group.userData.warpTrail.material.dispose();
+                    rocket.group.userData.warpTrail = null;
+                }
+                
+                console.log(`🚀 Warp drive disengaged. Delta: ${newGreeks.delta.toFixed(3)}`);
             }
             
             // Apply warp speed animation (pulsing, rotation, but limit distance from planet)
             if (extremeITM) {
-                // Add pulsing effect
-                const pulse = Math.sin(elapsedTime * 5) * 0.1 + 1.0;
+                // More dramatic pulsing effect with multiple frequencies
+                const pulse1 = Math.sin(elapsedTime * 8) * 0.12;
+                const pulse2 = Math.sin(elapsedTime * 15) * 0.08;
+                const pulse = 1.0 + pulse1 + pulse2;
                 rocket.group.scale.set(pulse, pulse, pulse);
                 
-                // Add rotation effect
-                rocket.group.rotation.x += delta * 0.5;
+                // Faster rotation effect with wobble
+                const rotationSpeed = 1.2 + Math.sin(elapsedTime * 6) * 0.3;
+                rocket.group.rotation.x += delta * rotationSpeed;
+                rocket.group.rotation.z += delta * (rotationSpeed * 0.9);
+                rocket.group.rotation.y += delta * Math.sin(elapsedTime * 4) * 0.2; // Wobble
+                
+                // Update warp trail with fading
+                if (rocket.group.userData.warpTrail && rocket.group.userData.trailPositions) {
+                    const trailPositions = rocket.group.userData.trailPositions;
+                    const trailColors = rocket.group.userData.trailColors;
+                    
+                    // Shift trail positions backward and fade
+                    for (let i = trailPositions.length - 3; i > 0; i -= 3) {
+                        trailPositions[i] = trailPositions[i - 3];
+                        trailPositions[i + 1] = trailPositions[i - 2];
+                        trailPositions[i + 2] = trailPositions[i - 1];
+                        
+                        // Fade colors
+                        if (trailColors) {
+                            const fadeFactor = i / trailPositions.length;
+                            trailColors[i] = 0.0; // R
+                            trailColors[i + 1] = 0.5 * fadeFactor; // G
+                            trailColors[i + 2] = 1.0 * fadeFactor; // B
+                        }
+                    }
+                    // Add new position at front with full brightness
+                    trailPositions[0] = targetPosition.x;
+                    trailPositions[1] = targetPosition.y;
+                    trailPositions[2] = targetPosition.z;
+                    if (trailColors) {
+                        trailColors[0] = 0.0;
+                        trailColors[1] = 0.7 + Math.random() * 0.3;
+                        trailColors[2] = 1.0;
+                    }
+                    rocket.group.userData.warpTrail.geometry.attributes.position.needsUpdate = true;
+                    if (trailColors) {
+                        rocket.group.userData.warpTrail.geometry.attributes.color.needsUpdate = true;
+                    }
+                }
+                
+                // Enhanced emissive pulsing with color shift
+                rocket.group.traverse((child) => {
+                    if (child.isMesh && child.material && child.material.emissiveIntensity !== undefined) {
+                        const warpPulse = Math.sin(elapsedTime * 12) * 0.5 + 1.5;
+                        child.material.emissiveIntensity = warpPulse;
+                        
+                        // Slight color shift toward cyan/white
+                        if (child.material.emissive) {
+                            const colorShift = Math.sin(elapsedTime * 8) * 0.1;
+                            const r = Math.min(1.0, 0.0 + colorShift);
+                            const g = Math.min(1.0, 0.7 + colorShift);
+                            const b = 1.0;
+                            child.material.emissive.setRGB(r, g, b);
+                        }
+                    }
+                });
+                
+                // Add velocity lines effect (streak effect)
+                if (!rocket.group.userData.warpStreaks) {
+                    const streakGeometry = new THREE.BufferGeometry();
+                    const streakCount = 20;
+                    const streakPositions = new Float32Array(streakCount * 6); // Start and end points
+                    for (let i = 0; i < streakCount; i++) {
+                        const angle = (i / streakCount) * Math.PI * 2;
+                        const radius = 2;
+                        const startIdx = i * 6;
+                        streakPositions[startIdx] = targetPosition.x;
+                        streakPositions[startIdx + 1] = targetPosition.y;
+                        streakPositions[startIdx + 2] = targetPosition.z;
+                        streakPositions[startIdx + 3] = targetPosition.x + Math.cos(angle) * radius;
+                        streakPositions[startIdx + 4] = targetPosition.y + Math.sin(angle) * radius;
+                        streakPositions[startIdx + 5] = targetPosition.z;
+                    }
+                    streakGeometry.setAttribute('position', new THREE.BufferAttribute(streakPositions, 3));
+                    const streakMaterial = new THREE.LineBasicMaterial({
+                        color: 0x00aaff,
+                        transparent: true,
+                        opacity: 0.6
+                    });
+                    const streaks = new THREE.LineSegments(streakGeometry, streakMaterial);
+                    scene.add(streaks);
+                    rocket.group.userData.warpStreaks = streaks;
+                } else {
+                    // Update streak positions
+                    const streaks = rocket.group.userData.warpStreaks;
+                    const positions = streaks.geometry.attributes.position.array;
+                    for (let i = 0; i < positions.length; i += 6) {
+                        positions[i] = targetPosition.x;
+                        positions[i + 1] = targetPosition.y;
+                        positions[i + 2] = targetPosition.z;
+                    }
+                    streaks.geometry.attributes.position.needsUpdate = true;
+                }
                 
                 // Ensure rocket doesn't stray too far from planet (limit max distance)
                 const maxDistanceFromPlanet = 25; // Don't go further than 25 units
-                const distanceFromPlanet = targetPosition.length();
+                const planetPos = rocket.spotPricePlanet ? rocket.spotPricePlanet.position : new THREE.Vector3(0, 0, 0);
+                const distanceFromPlanet = targetPosition.distanceTo(planetPos);
                 if (distanceFromPlanet > maxDistanceFromPlanet) {
                     // Scale back position to stay within bounds
-                    targetPosition.normalize().multiplyScalar(maxDistanceFromPlanet);
+                    const direction = targetPosition.clone().sub(planetPos).normalize();
+                    targetPosition.copy(planetPos).add(direction.multiplyScalar(maxDistanceFromPlanet));
                 }
             } else {
                 // Reset scale when not in warp
                 rocket.group.scale.lerp(new THREE.Vector3(1, 1, 1), 5 * delta);
+                
+                // Remove warp streaks if they exist
+                if (rocket.group.userData.warpStreaks) {
+                    scene.remove(rocket.group.userData.warpStreaks);
+                    rocket.group.userData.warpStreaks.geometry.dispose();
+                    rocket.group.userData.warpStreaks.material.dispose();
+                    rocket.group.userData.warpStreaks = null;
+                }
             }
             
             // Smoothly move rocket to target position
