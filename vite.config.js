@@ -13,7 +13,7 @@ export default {
     assetsDir: 'assets',
     rollupOptions: {
       input: {
-        'rockets-manual': resolve(__dirname, 'backendc/rockets.html'), // Manual input version
+        'rockets-manual': resolve(__dirname, 'backend/rockets.html'), // Manual input version
       },
       output: {
         // Ensure consistent naming for debugging - lowercase for compatibility (Grok-friendly)
@@ -59,4 +59,3 @@ export default {
     }
   }
 };
-
